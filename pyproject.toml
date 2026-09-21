@@ -1,0 +1,56 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "webmin_openvpn"
+version = "1.0.0"
+description = "OpenVPN Web Management with Pyramid and Ziggurat Foundations"
+readme = "README.rst"
+authors = [
+    { name = "Owo Sugiana" }
+]
+classifiers = [
+    "Programming Language :: Python",
+    "Framework :: Pyramid",
+    "Topic :: Internet :: WWW/HTTP",
+    "Topic :: Internet :: WWW/HTTP :: WSGI :: Application",
+]
+keywords = ["web", "pyramid", "openvpn", "ziggurat"]
+dependencies = [
+    "plaster_pastedeploy",
+    "pyramid",
+    "pyramid_chameleon",
+    "pyramid_tm",
+    "SQLAlchemy",
+    "transaction",
+    "zope.sqlalchemy",
+    "waitress",
+    "psycopg2-binary",
+    "ziggurat-foundations",
+    "bcrypt",
+    "passlib",
+]
+
+[project.optional-dependencies]
+testing = [
+    "WebTest",
+    "pytest",
+    "pytest-cov",
+]
+
+[project.scripts]
+initialize_webmin_openvpn_db = "webmin_openvpn.scripts.initialize_db:main"
+
+[project.entry-points."paste.app_factory"]
+main = "webmin_openvpn:main"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["webmin_openvpn*"]
+
+[tool.setuptools.package-data]
+"*" = ["*.pt", "*.css", "*.js", "*.png", "*.jpg", "*.svg", "*.ico", "*.txt", "*.ini"]

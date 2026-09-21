@@ -1,0 +1,106 @@
+<html metal:use-macro="load: webmin_openvpn:templates/layout.pt">
+<head>
+    <title metal:fill-slot="title">Daftar Pengguna &amp; Klien - Admin OpenVPN</title>
+</head>
+<body>
+    <div metal:fill-slot="content">
+        <!-- Page Header -->
+        <div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-3 mb-4 pb-2 border-bottom">
+            <div>
+                <h2 class="fw-bold text-dark mb-1">
+                    <i class="bi bi-people-fill text-primary me-2"></i>Daftar Pengguna &amp; Klien OpenVPN
+                </h2>
+                <p class="text-muted mb-0">Daftar pengguna OpenVPN berdasarkan berkas <code>.tgz</code> di direktori <code>${client_dir}</code>.</p>
+            </div>
+            <div class="d-flex gap-2">
+                <a href="${request.route_url('admin_create_cert')}" class="btn btn-primary rounded-3 shadow-sm d-flex align-items-center gap-2">
+                    <i class="bi bi-plus-lg"></i>
+                    <span>Buat Sertifikat Klien Baru</span>
+                </a>
+            </div>
+        </div>
+
+        <!-- Filter & Table Card -->
+        <div class="card shadow-sm border-0 rounded-4">
+            <div class="card-header bg-white border-0 pt-4 px-4 pb-2 d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-3">
+                <h5 class="fw-bold mb-0 text-dark">Data Klien OpenVPN (${len(clients)})</h5>
+                <div class="input-group" style="max-width: 300px;">
+                    <span class="input-group-text bg-light border-end-0 rounded-start-3 text-muted">
+                        <i class="bi bi-search"></i>
+                    </span>
+                    <input type="text" class="form-control bg-light border-start-0 rounded-end-3" id="tableSearch" placeholder="Cari username..." />
+                </div>
+            </div>
+
+            <div class="card-body p-4">
+                <div class="table-responsive">
+                    <table class="table table-hover align-middle mb-0" id="usersTable">
+                        <thead class="table-light">
+                            <tr>
+                                <th style="width: 50px;">#</th>
+                                <th>Username</th>
+                                <th>Berkas Sertifikat (.tgz)</th>
+                                <th>Ukuran</th>
+                                <th>Waktu Pembuatan / Modifikasi</th>
+                                <th class="text-end" style="width: 260px;">Aksi</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr tal:repeat="c clients">
+                                <td class="text-muted small">${repeat.c.number}</td>
+                                <td>
+                                    <div class="d-flex align-items-center gap-2">
+                                        <div class="avatar-circle bg-light text-primary rounded-circle d-flex align-items-center justify-content-center fw-bold" style="width:34px; height:34px;">
+                                            ${c['username'][:2].upper()}
+                                        </div>
+                                        <div>
+                                            <span class="fw-bold text-dark d-block">${c['username']}</span>
+                                        </div>
+                                    </div>
+                                </td>
+                                <td>
+                                    <span class="badge bg-success-subtle text-success border border-success-subtle px-2 py-1">
+                                        <i class="bi bi-file-earmark-zip-fill me-1"></i>${c['filename']}
+                                    </span>
+                                </td>
+                                <td class="text-muted small">
+                                    ${c['size_kb']} KB
+                                </td>
+                                <td class="text-muted small">
+                                    <i class="bi bi-clock me-1"></i>${c['modified']}
+                                </td>
+                                <td class="text-end">
+                                    <div class="btn-group btn-group-sm">
+                                        <a href="${request.route_url('admin_download_cert', username=c['username'])}" 
+                                           class="btn btn-outline-success" 
+                                           title="Unduh Berkas Sertifikat (.tgz)">
+                                            <i class="bi bi-download me-1"></i> Unduh
+                                        </a>
+                                        <a href="${request.route_url('admin_edit_user_password', username=c['username'])}" 
+                                           class="btn btn-outline-primary" 
+                                           title="Ubah Password User">
+                                            <i class="bi bi-key-fill me-1"></i> Ubah Password
+                                        </a>
+                                    </div>
+                                </td>
+                            </tr>
+                            <tr tal:condition="not clients">
+                                <td colspan="6" class="text-center py-5 text-muted">
+                                    <i class="bi bi-folder2-open fs-1 d-block mb-2 text-secondary"></i>
+                                    <span>Belum ada berkas sertifikat <code>.tgz</code> di direktori <code>${client_dir}</code>.</span>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div class="card-footer bg-light p-3 text-muted small border-0 d-flex justify-content-between align-items-center">
+                <span>Direktori sertifikat: <code>${client_dir}</code></span>
+                <span>Total: <strong>${len(clients)}</strong> klien OpenVPN</span>
+            </div>
+        </div>
+
+    </div>
+</body>
+</html>

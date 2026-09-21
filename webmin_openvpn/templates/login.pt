@@ -1,0 +1,80 @@
+<html metal:use-macro="load: webmin_openvpn:templates/layout.pt">
+<head>
+    <title metal:fill-slot="title">Masuk - OpenVPN Web Management</title>
+</head>
+<body>
+    <div metal:fill-slot="content">
+        <div class="row justify-content-center align-items-center min-vh-70 py-4">
+            <div class="col-12 col-sm-10 col-md-8 col-lg-5 col-xl-4">
+                
+                <div class="card shadow-lg border-0 rounded-4 overflow-hidden">
+                    <div class="card-header bg-gradient-primary text-white p-4 text-center border-0 position-relative">
+                        <div class="login-badge-icon bg-white text-primary rounded-circle d-inline-flex align-items-center justify-content-center shadow mb-2 p-3">
+                            <i class="bi bi-shield-lock-fill fs-2"></i>
+                        </div>
+                        <h4 class="fw-bold mb-1">Masuk ke Portal</h4>
+                        <p class="text-white-50 small mb-0">OpenVPN Web Management Portal</p>
+                    </div>
+
+                    <div class="card-body p-4 p-md-5">
+                        <form method="POST" action="${request.route_url('login')}" id="loginForm">
+                            <input type="hidden" name="next" value="${next_url}" />
+
+                            <div class="mb-4">
+                                <label for="username" class="form-label fw-semibold text-secondary small">USERNAME</label>
+                                <div class="input-group">
+                                    <span class="input-group-text bg-light border-end-0 rounded-start-3 text-muted">
+                                        <i class="bi bi-person"></i>
+                                    </span>
+                                    <input 
+                                        type="text" 
+                                        class="form-control bg-light border-start-0 rounded-end-3 py-2" 
+                                        id="username" 
+                                        name="username" 
+                                        value="${username}" 
+                                        placeholder="Masukkan username" 
+                                        required 
+                                        autofocus
+                                    />
+                                </div>
+                            </div>
+
+                            <div class="mb-4">
+                                <label for="password" class="form-label fw-semibold text-secondary small">PASSWORD</label>
+                                <div class="input-group">
+                                    <span class="input-group-text bg-light border-end-0 rounded-start-3 text-muted">
+                                        <i class="bi bi-key"></i>
+                                    </span>
+                                    <input 
+                                        type="password" 
+                                        class="form-control bg-light border-start-0 border-end-0 py-2" 
+                                        id="password" 
+                                        name="password" 
+                                        placeholder="Masukkan password" 
+                                        required 
+                                    />
+                                    <button class="btn btn-light border border-start-0 rounded-end-3 text-muted" type="button" id="togglePassword">
+                                        <i class="bi bi-eye" id="togglePasswordIcon"></i>
+                                    </button>
+                                </div>
+                            </div>
+
+                            <div class="d-grid mt-4">
+                                <button type="submit" class="btn btn-primary btn-lg rounded-3 fw-bold shadow-sm d-flex align-items-center justify-content-center gap-2">
+                                    <i class="bi bi-box-arrow-in-right"></i>
+                                    <span>Masuk ke Akun</span>
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+
+                    <div class="card-footer bg-light p-3 text-center border-0 small text-muted">
+                        <i class="bi bi-info-circle me-1"></i> Hubungi administrator jika Anda belum memiliki sertifikat / akun.
+                    </div>
+                </div>
+
+            </div>
+        </div>
+    </div>
+</body>
+</html>

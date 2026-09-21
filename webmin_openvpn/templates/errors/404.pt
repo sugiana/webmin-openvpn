@@ -1,0 +1,25 @@
+<html metal:use-macro="load: webmin_openvpn:templates/layout.pt">
+<head>
+    <title metal:fill-slot="title">404 Halaman Tidak Ditemukan - OpenVPN Management</title>
+</head>
+<body>
+    <div metal:fill-slot="content">
+        <div class="row justify-content-center text-center py-5">
+            <div class="col-12 col-md-8 col-lg-6">
+                <div class="card shadow-sm border-0 rounded-4 p-5">
+                    <div class="mb-3 text-warning">
+                        <i class="bi bi-question-circle display-1"></i>
+                    </div>
+                    <h2 class="fw-bold text-dark mb-2">404 - Halaman Tidak Ditemukan</h2>
+                    <p class="text-muted mb-4">${message or 'Halaman yang Anda cari tidak ditemukan atau telah dipindahkan.'}</p>
+                    <div>
+                        <a href="${request.route_url('admin_dashboard') if request.user else request.route_url('login')}" class="btn btn-primary rounded-3 px-4 py-2 fw-bold">
+                            <i class="bi bi-arrow-left me-1"></i> Kembali ke Beranda
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</body>
+</html>

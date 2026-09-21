@@ -1,0 +1,124 @@
+<html metal:use-macro="load: webmin_openvpn:templates/layout.pt">
+<head>
+    <title metal:fill-slot="title">Buat Sertifikat OpenVPN - Admin</title>
+</head>
+<body>
+    <div metal:fill-slot="content">
+        <!-- Page Header -->
+        <div class="d-flex justify-content-between align-items-center mb-4 pb-2 border-bottom">
+            <div>
+                <h2 class="fw-bold text-dark mb-1">
+                    <i class="bi bi-plus-circle-fill text-primary me-2"></i>Buat Sertifikat OpenVPN
+                </h2>
+                <p class="text-muted mb-0">Generate berkas sertifikat klien OpenVPN (.tgz) dan buat akun pengguna di sistem Linux.</p>
+            </div>
+            <a href="${request.route_url('admin_users')}" class="btn btn-outline-secondary rounded-3">
+                <i class="bi bi-arrow-left me-1"></i> Daftar User
+            </a>
+        </div>
+
+        <div class="row g-4">
+            <!-- Form Column -->
+            <div class="col-12 col-lg-6">
+                <div class="card shadow-sm border-0 rounded-4">
+                    <div class="card-header bg-white border-0 pt-4 px-4 pb-2">
+                        <h5 class="fw-bold text-dark mb-1">Formulir Klien Baru</h5>
+                        <p class="text-muted small mb-0">Masukkan detail kredensial OpenVPN yang akan dibuat.</p>
+                    </div>
+
+                    <div class="card-body p-4">
+                        <form method="POST" action="${request.route_url('admin_create_cert')}" id="createCertForm">
+                            
+                            <div class="mb-3">
+                                <label for="username" class="form-label fw-semibold text-secondary small">USERNAME KLIEN</label>
+                                <div class="input-group">
+                                    <span class="input-group-text bg-light border-end-0 rounded-start-3 text-muted">
+                                        <i class="bi bi-person"></i>
+                                    </span>
+                                    <input 
+                                        type="text" 
+                                        class="form-control bg-light border-start-0 py-2" 
+                                        id="username" 
+                                        name="username" 
+                                        value="${username}" 
+                                        placeholder="Contoh: user-01, client-vpn" 
+                                        pattern="[a-z0-9\-]+" 
+                                        required 
+                                        autofocus 
+                                    />
+                                </div>
+                                <div class="form-text small">Gunakan hanya huruf kecil, angka, dan karakter minus (-).</div>
+                            </div>
+
+                            <div class="mb-4">
+                                <label for="password" class="form-label fw-semibold text-secondary small">PASSWORD</label>
+                                <div class="input-group">
+                                    <span class="input-group-text bg-light border-end-0 rounded-start-3 text-muted">
+                                        <i class="bi bi-key"></i>
+                                    </span>
+                                    <input 
+                                        type="password" 
+                                        class="form-control bg-light border-start-0 border-end-0 py-2" 
+                                        id="password" 
+                                        name="password" 
+                                        placeholder="Minimal 8 karakter" 
+                                        minlength="8" 
+                                        required 
+                                    />
+                                    <button class="btn btn-light border border-start-0 rounded-end-3 text-muted" type="button" id="togglePassword">
+                                        <i class="bi bi-eye" id="togglePasswordIcon"></i>
+                                    </button>
+                                </div>
+                                <div class="form-text small">Password ini digunakan untuk autentikasi klien OpenVPN (PAM). Minimal 8 karakter.</div>
+                            </div>
+
+                            <div class="p-3 bg-light rounded-3 mb-4 border">
+                                <div class="d-flex align-items-center gap-2 mb-1">
+                                    <i class="bi bi-terminal text-primary"></i>
+                                    <span class="small fw-bold text-secondary">Perintah yang akan dieksekusi:</span>
+                                </div>
+                                <code class="d-block text-break text-dark small" id="cmdPreview">
+                                    build-client-cert <span id="previewUser">${username or '[username]'}</span> proxy login adduser pass=<span id="previewPass">******</span>
+                                </code>
+                            </div>
+
+                            <div class="d-grid">
+                                <button type="submit" class="btn btn-primary btn-lg rounded-3 fw-bold shadow-sm d-flex align-items-center justify-content-center gap-2" id="submitBtn">
+                                    <i class="bi bi-gear-fill"></i>
+                                    <span>Eksekusi &amp; Buat Sertifikat</span>
+                                </button>
+                            </div>
+
+                        </form>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Terminal / Output Log Column -->
+            <div class="col-12 col-lg-6">
+                <div class="card shadow-sm border-0 rounded-4 h-100">
+                    <div class="card-header bg-dark text-white border-0 pt-3 px-4 pb-3 rounded-top-4 d-flex justify-content-between align-items-center">
+                        <div class="d-flex align-items-center gap-2">
+                            <span class="d-inline-block rounded-circle bg-danger" style="width:10px; height:10px;"></span>
+                            <span class="d-inline-block rounded-circle bg-warning" style="width:10px; height:10px;"></span>
+                            <span class="d-inline-block rounded-circle bg-success" style="width:10px; height:10px;"></span>
+                            <span class="ms-2 small fw-bold font-monospace">Console Output</span>
+                        </div>
+                        <span tal:condition="cmd_success is not None" class="badge ${'bg-success' if cmd_success else 'bg-danger'}">
+                            ${'BERHASIL' if cmd_success else 'GAGAL'}
+                        </span>
+                    </div>
+                    <div class="card-body bg-dark text-light p-4 font-monospace rounded-bottom-4 overflow-auto" style="max-height: 450px; min-height: 250px;">
+                        <pre class="mb-0 text-white-50" tal:condition="cmd_output" style="white-space: pre-wrap; word-break: break-all;">${cmd_output}</pre>
+                        <div class="text-secondary text-center py-5" tal:condition="not cmd_output">
+                            <i class="bi bi-code-square fs-1 d-block mb-2 text-white-50"></i>
+                            <span>Output eksekusi skrip akan muncul di sini setelah formulir dikirimkan.</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+    </div>
+</body>
+</html>

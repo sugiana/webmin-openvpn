@@ -1,0 +1,6 @@
+*.html
+*egg-info
+__pycache__
+build
+test.ini
+style.css
