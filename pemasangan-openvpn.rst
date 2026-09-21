@@ -35,7 +35,7 @@ Buat file ``/etc/openvpn/server/script/client-up``::
 
     #!/bin/sh
     iptables -t nat -A POSTROUTING -j MASQUERADE -s $ifconfig_pool_remote_ip
-    iptables -t nat -I PREROUTING -p tcp -d 202.43.164.162 -m multiport ! --dports 22,1194 -j DNAT --to-destination $ifconfig_pool_remote_ip
+    iptables -t nat -I PREROUTING -p tcp -d 202.43.164.162 -m multiport ! --dports 22,80,443,1194 -j DNAT --to-destination $ifconfig_pool_remote_ip
     exit 0
 
 Sesuaikan IP itu dengan IP publik server ini.
@@ -44,7 +44,7 @@ Buat file ``/etc/openvpn/server/script/client-down``::
 
     #!/bin/sh
     iptables -t nat -D POSTROUTING -j MASQUERADE -s $ifconfig_pool_remote_ip
-    iptables -t nat -D PREROUTING -p tcp -d 202.43.164.162 -m multiport ! --dports 22,1194 -j DNAT --to-destination $ifconfig_pool_remote_ip
+    iptables -t nat -D PREROUTING -p tcp -d 202.43.164.162 -m multiport ! --dports 22,80,443,1194 -j DNAT --to-destination $ifconfig_pool_remote_ip
     exit 0
 
 Jadikan keduanya executable::
