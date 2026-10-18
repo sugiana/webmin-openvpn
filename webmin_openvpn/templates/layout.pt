@@ -153,6 +153,6 @@
     <!-- Bootstrap 5.3 JS Bundle -->
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
     <!-- Custom JS -->
-    <script src="${request.static_url('webmin_openvpn:static/js/app.js')}"></script>
+    <script src="${request.static_url('webmin_openvpn:static/js/app.js')}?v=20261018"></script>
 </body>
 </html>

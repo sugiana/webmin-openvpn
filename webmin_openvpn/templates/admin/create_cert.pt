@@ -72,13 +72,31 @@
                                 <div class="form-text small">Password ini digunakan untuk autentikasi klien OpenVPN (PAM). Minimal 8 karakter.</div>
                             </div>
 
+                            <div class="mb-4">
+                                <div class="form-check">
+                                    <input 
+                                        class="form-check-input" 
+                                        type="checkbox" 
+                                        id="proxy" 
+                                        name="proxy" 
+                                        value="1" 
+                                        tal:attributes="checked 'checked' if proxy else None"
+                                        onchange="var el = document.getElementById('previewProxy'); if (el) el.textContent = this.checked ? 'proxy ' : '';"
+                                    />
+                                    <label class="form-check-label fw-semibold text-dark" for="proxy">
+                                        Boleh akses proxy
+                                    </label>
+                                </div>
+                                <div class="form-text small">Jika dicentang, perintah akan menyertakan opsi <code>proxy</code>.</div>
+                            </div>
+
                             <div class="p-3 bg-light rounded-3 mb-4 border">
                                 <div class="d-flex align-items-center gap-2 mb-1">
                                     <i class="bi bi-terminal text-primary"></i>
                                     <span class="small fw-bold text-secondary">Perintah yang akan dieksekusi:</span>
                                 </div>
                                 <code class="d-block text-break text-dark small" id="cmdPreview">
-                                    build-client-cert <span id="previewUser">${username or '[username]'}</span> proxy login adduser pass=<span id="previewPass">******</span>
+                                    build-client-cert <span id="previewUser">${username or '[username]'}</span> <span id="previewProxy">${'proxy ' if proxy else ''}</span>login adduser pass=<span id="previewPass">******</span>
                                 </code>
                             </div>
 
@@ -119,6 +137,20 @@
             </div>
         </div>
 
+        <script>
+            (function() {
+                var chk = document.getElementById('proxy');
+                var preview = document.getElementById('previewProxy');
+                if (chk && preview) {
+                    function sync() {
+                        preview.textContent = chk.checked ? 'proxy ' : '';
+                    }
+                    chk.addEventListener('change', sync);
+                    chk.addEventListener('click', sync);
+                    sync();
+                }
+            })();
+        </script>
     </div>
 </body>
 </html>

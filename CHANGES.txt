@@ -1,0 +1,11 @@
+2026-10-18
+----------
+- Akses proxy adalah pilihan
+- Memastikan user yang login VPN sesuai sertifikat
+- Bug fixed dokumentasi pip install 
+- Penyesuaian command line pembuatan sertifikat
+- Penyesuaian modul Python untuk akses ke Postgres sesuai SQLAlchemy yang baru
+
+2026-09-21
+----------
+- Kali pertama

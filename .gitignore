@@ -2,5 +2,6 @@
 *egg-info
 __pycache__
 build
+dist
 test.ini
 style.css

@@ -19,6 +19,9 @@ document.addEventListener('DOMContentLoaded', function() {
     const previewUser = document.getElementById('previewUser');
     const previewPass = document.getElementById('previewPass');
 
+    const proxyCheckbox = document.getElementById('proxy');
+    const previewProxy = document.getElementById('previewProxy');
+
     if (usernameInput && previewUser) {
         usernameInput.addEventListener('input', function() {
             const val = usernameInput.value.trim().toLowerCase();
@@ -32,6 +35,14 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
 
+    if (proxyCheckbox && previewProxy) {
+        function updateProxyPreview() {
+            previewProxy.textContent = proxyCheckbox.checked ? 'proxy ' : '';
+        }
+        proxyCheckbox.addEventListener('change', updateProxyPreview);
+        proxyCheckbox.addEventListener('click', updateProxyPreview);
+    }
+
     // 3. User Table Live Search Filter
     const searchInput = document.getElementById('tableSearch');
     const usersTable = document.getElementById('usersTable');
@@ -42,15 +53,11 @@ document.addEventListener('DOMContentLoaded', function() {
             const rows = usersTable.getElementsByTagName('tbody')[0].getElementsByTagName('tr');
             
             for (let i = 0; i < rows.length; i++) {
-                const cells = rows[i].getElementsByTagName('td');
-                if (cells.length > 1) {
-                    const usernameText = cells[1].textContent || cells[1].innerText;
-                    const emailText = cells[2].textContent || cells[2].innerText;
-                    if (usernameText.toLowerCase().indexOf(filter) > -1 || emailText.toLowerCase().indexOf(filter) > -1) {
-                        rows[i].style.display = '';
-                    } else {
-                        rows[i].style.display = 'none';
-                    }
+                const rowText = rows[i].textContent || rows[i].innerText;
+                if (rowText.toLowerCase().indexOf(filter) > -1) {
+                    rows[i].style.display = '';
+                } else {
+                    rows[i].style.display = 'none';
                 }
             }
         });

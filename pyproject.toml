@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "webmin_openvpn"
-version = "1.0.0"
+version = "1.1.0"
 description = "OpenVPN Web Management with Pyramid and Ziggurat Foundations"
 readme = "README.rst"
 authors = [
@@ -26,7 +26,8 @@ dependencies = [
     "transaction",
     "zope.sqlalchemy",
     "waitress",
-    "psycopg2-binary",
+    "psycopg-binary",
+    "psycopg",
     "ziggurat-foundations",
     "bcrypt",
     "passlib",

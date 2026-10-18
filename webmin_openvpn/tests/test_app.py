@@ -27,6 +27,17 @@ class TestWebminOpenVPN(unittest.TestCase):
         with open(dummy_cert_path, 'wb') as f:
             f.write(b'dummy gzip content for test')
 
+        cls.test_ipp_file = os.path.join(cls.test_client_dir, 'test_ipp.txt')
+        with open(cls.test_ipp_file, 'w') as f:
+            f.write("sampleuser,10.8.41.99,\notheruser,10.8.41.100,\n")
+        settings['openvpn.ipp_file'] = cls.test_ipp_file
+
+        cls.test_proxy_file = os.path.join(
+            cls.test_client_dir, 'test_proxy.txt')
+        with open(cls.test_proxy_file, 'w') as f:
+            f.write("sampleuser\n")
+        settings['openvpn.proxy_file'] = cls.test_proxy_file
+
         cls.app = main({}, **settings)
         cls.engine = get_engine(settings)
         cls.session_factory = get_session_factory(cls.engine)
@@ -90,6 +101,10 @@ class TestWebminOpenVPN(unittest.TestCase):
         self.assertIn('Data Klien OpenVPN', users_page.text)
         self.assertIn('sampleuser', users_page.text)
         self.assertIn('sampleuser.tgz', users_page.text)
+        self.assertIn('<th>IP</th>', users_page.text)
+        self.assertNotIn('<th>Ukuran</th>', users_page.text)
+        self.assertIn('10.8.41.99', users_page.text)
+        self.assertIn('Proxy', users_page.text)
 
         # 2. Download certificate
         dl_res = admin_app.get('/admin/users/sampleuser/download', status=200)
@@ -103,6 +118,38 @@ class TestWebminOpenVPN(unittest.TestCase):
         dl_none = admin_app.get(
             '/admin/users/nonexistentuser/download', status=302)
         self.assertIn('/admin/users', dl_none.location)
+
+    def test_admin_set_proxy(self):
+        """Test clicking Proxy button sets user via set_proxy_user."""
+        from unittest.mock import patch
+        admin_app = webtest.TestApp(self.app)
+        admin_app.post(
+            '/login', {'username': 'admin', 'password': 'admin'}, status=302)
+
+        # 1. Click Proxy button for sampleuser
+        with patch('webmin_openvpn.views.admin.set_proxy_user') as mock_set:
+            mock_set.return_value = True
+            res = admin_app.get('/admin/users/sampleuser/proxy', status=302)
+            self.assertIn('/admin/users', res.location)
+            mock_set.assert_called_once()
+            self.assertEqual(mock_set.call_args[0][0], 'sampleuser')
+
+        # Follow redirect and verify success message and button
+        followed = res.follow(status=200)
+        self.assertIn('berhasil diset sebagai proxy aktif', followed.text)
+        self.assertIn('Proxy', followed.text)
+
+    def test_load_ipp_map(self):
+        """Test parsing OpenVPN ipp.txt file."""
+        from webmin_openvpn.utils import load_ipp_map
+        ipp_map = load_ipp_map(self.test_ipp_file)
+        self.assertEqual(ipp_map.get('sampleuser'), '10.8.41.99')
+        self.assertEqual(ipp_map.get('otheruser'), '10.8.41.100')
+        self.assertIsNone(ipp_map.get('nonexistent'))
+
+        # Non-existent file gracefully returns empty dict
+        empty_map = load_ipp_map('/nonexistent/path/ipp.txt')
+        self.assertEqual(empty_map, {})
 
     def test_admin_edit_user_password(self):
         """Test admin editing a user password."""
@@ -202,6 +249,84 @@ class TestWebminOpenVPN(unittest.TestCase):
             'password': 'short77',
         }, status=200)
         self.assertIn('Password minimal 8 karakter', res_short.text)
+
+    def test_create_cert_proxy_checkbox(self):
+        """Test proxy checkbox in create cert form and command generation."""
+        from unittest.mock import patch
+
+        admin_app = webtest.TestApp(self.app)
+        admin_app.post(
+            '/login', {'username': 'admin', 'password': 'admin'}, status=302)
+
+        # 1. Page renders checkbox
+        page = admin_app.get('/admin/create-cert', status=200)
+        self.assertIn('Boleh akses proxy', page.text)
+        self.assertIn('name="proxy"', page.text)
+
+        # 2. Submit with proxy checked
+        with patch('webmin_openvpn.views.admin.run_system_command') \
+             as mock_run, patch('webmin_openvpn.views.admin.set_proxy_user') \
+             as mock_set:
+            mock_run.return_value = (0, "Success")
+            admin_app.post('/admin/create-cert', {
+                'username': 'proxyclient',
+                'password': 'password123',
+                'proxy': '1',
+            }, status=200)
+
+            mock_run.assert_called_once()
+            cmd_args = mock_run.call_args[0][0]
+            self.assertEqual(cmd_args[1], 'proxyclient')
+            self.assertIn('proxy', cmd_args)
+            self.assertEqual(
+                cmd_args, [
+                    '/usr/local/bin/build-client-cert', 'proxyclient', 'proxy',
+                    'login', 'adduser', 'pass=password123'])
+            # Verify set_proxy_user called with proxyclient
+            mock_set.assert_called_once()
+            self.assertEqual(mock_set.call_args[0][0], 'proxyclient')
+
+        # 3. Submit without proxy checked
+        with patch('webmin_openvpn.views.admin.run_system_command') \
+             as mock_run, patch('webmin_openvpn.views.admin.set_proxy_user') \
+             as mock_set:
+            mock_run.return_value = (0, "Success")
+            admin_app.post('/admin/create-cert', {
+                'username': 'noproxyclient',
+                'password': 'password123',
+            }, status=200)
+
+            mock_run.assert_called_once()
+            cmd_args = mock_run.call_args[0][0]
+            self.assertEqual(cmd_args[1], 'noproxyclient')
+            self.assertNotIn('proxy', cmd_args)
+            self.assertEqual(
+                cmd_args, [
+                    '/usr/local/bin/build-client-cert', 'noproxyclient',
+                    'login', 'adduser', 'pass=password123'])
+            # Verify set_proxy_user was NOT called
+            mock_set.assert_not_called()
+
+    def test_proxy_user_helpers(self):
+        """Test get_proxy_user and set_proxy_user helper functions."""
+        from unittest.mock import patch
+        from webmin_openvpn.utils import get_proxy_user, set_proxy_user
+
+        tmp_proxy = os.path.join(self.test_client_dir, 'helpers_proxy.txt')
+        # None initially
+        self.assertIsNone(get_proxy_user(tmp_proxy))
+
+        # Test set_proxy_user executes new-proxy-user command
+        with patch('webmin_openvpn.utils.run_system_command') as mock_cmd:
+            mock_cmd.return_value = (0, "Success")
+            res1 = set_proxy_user('karyoto')
+            self.assertTrue(res1)
+            mock_cmd.assert_called_with([
+                '/usr/local/bin/new-proxy-user', 'karyoto'])
+            res2 = set_proxy_user('husein')
+            self.assertTrue(res2)
+            mock_cmd.assert_called_with([
+                '/usr/local/bin/new-proxy-user', 'husein'])
 
     def test_edit_and_change_password_min_length(self):
         """Test edit user password and change own password min 8 characters

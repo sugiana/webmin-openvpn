@@ -28,7 +28,7 @@
                     <span class="input-group-text bg-light border-end-0 rounded-start-3 text-muted">
                         <i class="bi bi-search"></i>
                     </span>
-                    <input type="text" class="form-control bg-light border-start-0 rounded-end-3" id="tableSearch" placeholder="Cari username..." />
+                    <input type="text" class="form-control bg-light border-start-0 rounded-end-3" id="tableSearch" placeholder="Cari username atau IP..." />
                 </div>
             </div>
 
@@ -39,10 +39,10 @@
                             <tr>
                                 <th style="width: 50px;">#</th>
                                 <th>Username</th>
+                                <th>IP</th>
                                 <th>Berkas Sertifikat (.tgz)</th>
-                                <th>Ukuran</th>
                                 <th>Waktu Pembuatan / Modifikasi</th>
-                                <th class="text-end" style="width: 260px;">Aksi</th>
+                                <th class="text-end" style="width: 330px;">Aksi</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -59,26 +59,36 @@
                                     </div>
                                 </td>
                                 <td>
+                                    <span tal:condition="c.get('ip') and c['ip'] != '-'" class="badge bg-info-subtle text-info border border-info-subtle font-monospace px-2 py-1">
+                                        <i class="bi bi-hdd-network me-1"></i>${c['ip']}
+                                    </span>
+                                    <span tal:condition="not c.get('ip') or c['ip'] == '-'" class="text-muted small">
+                                        -
+                                    </span>
+                                </td>
+                                <td>
                                     <span class="badge bg-success-subtle text-success border border-success-subtle px-2 py-1">
                                         <i class="bi bi-file-earmark-zip-fill me-1"></i>${c['filename']}
                                     </span>
-                                </td>
-                                <td class="text-muted small">
-                                    ${c['size_kb']} KB
                                 </td>
                                 <td class="text-muted small">
                                     <i class="bi bi-clock me-1"></i>${c['modified']}
                                 </td>
                                 <td class="text-end">
                                     <div class="btn-group btn-group-sm">
+                                        <a href="${request.route_url('admin_set_proxy', username=c['username'])}" 
+                                            class="btn ${'btn-warning fw-bold' if c.get('is_proxy') else 'btn-outline-warning'}" 
+                                            title="${'User ini adalah proxy aktif' if c.get('is_proxy') else 'Set ' + c['username'] + ' sebagai proxy aktif'}">
+                                            <i class="bi bi-shield-shaded me-1"></i> Proxy
+                                        </a>
                                         <a href="${request.route_url('admin_download_cert', username=c['username'])}" 
-                                           class="btn btn-outline-success" 
-                                           title="Unduh Berkas Sertifikat (.tgz)">
+                                            class="btn btn-outline-success" 
+                                            title="Unduh Berkas Sertifikat (.tgz)">
                                             <i class="bi bi-download me-1"></i> Unduh
                                         </a>
                                         <a href="${request.route_url('admin_edit_user_password', username=c['username'])}" 
-                                           class="btn btn-outline-primary" 
-                                           title="Ubah Password User">
+                                            class="btn btn-outline-primary" 
+                                            title="Ubah Password User">
                                             <i class="bi bi-key-fill me-1"></i> Ubah Password
                                         </a>
                                     </div>
@@ -96,7 +106,7 @@
             </div>
 
             <div class="card-footer bg-light p-3 text-muted small border-0 d-flex justify-content-between align-items-center">
-                <span>Direktori sertifikat: <code>${client_dir}</code></span>
+                <span>Direktori sertifikat: <code>${client_dir}</code> | Berkas IP: <code>${ipp_file}</code> | Proxy: <strong class="text-dark">${proxy_user or 'Belum ada'}</strong></span>
                 <span>Total: <strong>${len(clients)}</strong> klien OpenVPN</span>
             </div>
         </div>

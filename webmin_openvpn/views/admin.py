@@ -18,6 +18,8 @@ from ..utils import (
     list_client_certificates,
     is_linux_user_exists,
     get_system_stats,
+    get_proxy_user,
+    set_proxy_user,
 )
 
 
@@ -113,14 +115,20 @@ def admin_create_cert_view(request):
     client_dir = settings.get('openvpn.client_dir', '/etc/openvpn/client')
     build_cert_cmd = settings.get(
         'openvpn.build_cert_cmd', '/usr/local/bin/build-client-cert')
+    new_proxy_cmd = settings.get(
+        'openvpn.new_proxy_cmd', '/usr/local/bin/new-proxy-user')
+    proxy_file = settings.get(
+        'openvpn.proxy_file', '/var/log/openvpn/proxy.txt')
 
     username = ''
+    proxy = False
     cmd_output = None
     cmd_success = None
 
     if request.method == 'POST':
         username = request.params.get('username', '').strip().lower()
         password = request.params.get('password', '')
+        proxy = bool(request.params.get('proxy'))
 
         # Validation
         if not username or not password:
@@ -138,15 +146,11 @@ def admin_create_cert_view(request):
             request.session.flash('Password minimal 8 karakter.', 'danger')
         else:
             # Build and execute command:
-            # build-client-cert [username] proxy login adduser pass=[password]
-            cmd = [
-                build_cert_cmd,
-                username,
-                'proxy',
-                'login',
-                'adduser',
-                f'pass={password}',
-            ]
+            # build-client-cert [user] [proxy] login adduser pass=[password]
+            cmd = [build_cert_cmd, username]
+            if proxy:
+                cmd.append('proxy')
+            cmd.extend(['login', 'adduser', f'pass={password}'])
 
             return_code, output = run_system_command(cmd, timeout=180)
             cmd_output = output
@@ -154,6 +158,12 @@ def admin_create_cert_view(request):
 
             cert_path = os.path.join(client_dir, f"{username}.tgz")
             if cmd_success or os.path.exists(cert_path):
+                # Update proxy.txt only if proxy was checked
+                if proxy:
+                    set_proxy_user(
+                        username, new_proxy_cmd=new_proxy_cmd,
+                        proxy_file=proxy_file)
+
                 request.session.flash(
                     f'Sertifikat OpenVPN untuk "{username}" berhasil dibuat!',
                     'success',
@@ -167,6 +177,7 @@ def admin_create_cert_view(request):
     return {
         'user': request.user,
         'username': username,
+        'proxy': proxy,
         'cmd_output': cmd_output,
         'cmd_success': cmd_success,
         'client_dir': client_dir,
@@ -181,17 +192,26 @@ def admin_create_cert_view(request):
 def admin_users_view(request):
     """
     Admin: Melihat daftar user dari file *.tgz di direktori
-    /etc/openvpn/client.
+    /etc/openvpn/client, IP dari /var/log/openvpn/ipp.txt,
+    dan status proxy dari /var/log/openvpn/proxy.txt.
     """
     settings = request.registry.settings
     client_dir = settings.get('openvpn.client_dir', '/etc/openvpn/client')
+    ipp_file = settings.get('openvpn.ipp_file', '/var/log/openvpn/ipp.txt')
+    proxy_file = settings.get(
+        'openvpn.proxy_file', '/var/log/openvpn/proxy.txt')
 
-    clients = list_client_certificates(client_dir)
+    clients = list_client_certificates(
+        client_dir, ipp_file=ipp_file, proxy_file=proxy_file)
+    proxy_user = get_proxy_user(proxy_file)
 
     return {
         'user': request.user,
         'clients': clients,
         'client_dir': client_dir,
+        'ipp_file': ipp_file,
+        'proxy_file': proxy_file,
+        'proxy_user': proxy_user,
     }
 
 
@@ -312,6 +332,41 @@ def admin_system_stats_view(request):
     return get_system_stats()
 
 
+@view_config(
+    route_name='admin_set_proxy',
+    permission='admin',
+)
+def admin_set_proxy_view(request):
+    """
+    Admin: Menjadikan user yang dipilih sebagai proxy aktif di proxy.txt.
+    """
+    username = request.matchdict.get('username', '').strip().lower()
+    if not username or not re.match(r'^[a-z0-9_\-\.]+$', username):
+        request.session.flash('Nama user tidak valid.', 'danger')
+        return HTTPFound(location=request.route_url('admin_users'))
+
+    settings = request.registry.settings
+    new_proxy_cmd = settings.get(
+        'openvpn.new_proxy_cmd', '/usr/local/bin/new-proxy-user')
+    proxy_file = settings.get(
+        'openvpn.proxy_file', '/var/log/openvpn/proxy.txt')
+
+    success = set_proxy_user(
+        username, new_proxy_cmd=new_proxy_cmd, proxy_file=proxy_file)
+    if success:
+        request.session.flash(
+            f'User "{username}" berhasil diset sebagai proxy aktif.',
+            'success',
+        )
+    else:
+        request.session.flash(
+            f'Gagal memperbarui proxy untuk "{username}".',
+            'danger',
+        )
+
+    return HTTPFound(location=request.route_url('admin_users'))
+
+
 def includeme(config):
     config.add_route('admin_dashboard', '/admin')
     config.add_route('admin_change_password', '/admin/change-password')
@@ -323,5 +378,8 @@ def includeme(config):
     config.add_route(
         'admin_edit_user_password',
         '/admin/users/{username:[a-z0-9_\\-\\.]+}/password')
+    config.add_route(
+        'admin_set_proxy',
+        '/admin/users/{username:[a-z0-9_\\-\\.]+}/proxy')
     config.add_route('admin_system_stats', '/admin/api/system-stats')
     config.scan(__name__)

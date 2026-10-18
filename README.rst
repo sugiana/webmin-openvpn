@@ -48,7 +48,8 @@ Buat database::
 
 Buat Python virtual environment::
 
-    python3.13 -m venv ~/env
+    sudo apt install python3-venv
+    python3 -m venv ~/env
 
 Unduh aplikasi ini::
 
@@ -56,7 +57,7 @@ Unduh aplikasi ini::
 
 Pasang::
 
-    ~/env/bin/pip install webmin-openvpn 
+    ~/env/bin/pip install webmin-openvpn/
 
 Salin contoh file konfigurasi::
 
@@ -88,7 +89,6 @@ Buat file ``/etc/systemd/system/webmin-openvpn.service``::
 
 Jalankan server::
 
-    sudo systemcl daemon-reload
     sudo systemctl enable webmin-openvpn.service
     sudo systemctl start webmin-openvpn.service
 

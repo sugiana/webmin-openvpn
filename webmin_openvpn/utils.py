@@ -81,11 +81,109 @@ def sync_system_password(username, new_password):
         return False, str(e)
 
 
-def get_cert_details(client_dir, username):
+def load_ipp_map(ipp_file='/var/log/openvpn/ipp.txt'):
+    """
+    Parse OpenVPN ifconfig-pool-persist file (ipp.txt).
+    Returns a dict mapping username -> ip_address.
+    """
+    ipp_map = {}
+    if not ipp_file:
+        return ipp_map
+
+    content = ""
+    if os.path.exists(ipp_file):
+        try:
+            with open(ipp_file, 'r', encoding='utf-8', errors='ignore') as f:
+                content = f.read()
+        except PermissionError:
+            rc, out = run_system_command(['cat', ipp_file])
+            if rc == 0:
+                content = out
+            else:
+                logger.warning(
+                    "Failed to read ipp file %s via sudo: %s", ipp_file, out)
+        except Exception as e:
+            logger.warning("Failed to read ipp file %s: %s", ipp_file, e)
+    else:
+        # File might exist in directory restricted to root
+        rc, out = run_system_command(['cat', ipp_file])
+        if rc == 0:
+            content = out
+
+    for line in content.splitlines():
+        line = line.strip()
+        if not line or line.startswith('#') or line.startswith(';'):
+            continue
+        parts = [p.strip() for p in line.split(',')]
+        if len(parts) >= 2 and parts[0]:
+            username = parts[0]
+            ip = parts[1]
+            if ip:
+                ipp_map[username] = ip
+                ipp_map[username.lower()] = ip
+
+    return ipp_map
+
+
+def get_proxy_user(proxy_file='/var/log/openvpn/proxy.txt'):
+    """
+    Read the single proxy-enabled username from proxy_file.
+    Returns username string or None if not set or empty.
+    """
+    if not proxy_file:
+        return None
+
+    content = ""
+    if os.path.exists(proxy_file):
+        try:
+            with open(proxy_file, 'r', encoding='utf-8', errors='ignore') as f:
+                content = f.read()
+        except PermissionError:
+            rc, out = run_system_command(['cat', proxy_file])
+            if rc == 0:
+                content = out
+        except Exception as e:
+            logger.warning("Failed to read proxy file %s: %s", proxy_file, e)
+    else:
+        rc, out = run_system_command(['cat', proxy_file])
+        if rc == 0:
+            content = out
+
+    user = content.strip().splitlines()[0].strip() if content.strip() else None
+    return user
+
+
+def set_proxy_user(username, new_proxy_cmd='/usr/local/bin/new-proxy-user',
+                   proxy_file=None):
+    """
+    Execute /usr/local/bin/new-proxy-user [username] to set the proxy-enabled
+    user. The script handles saving the user to /var/log/openvpn/proxy.txt.
+    """
+    if not username:
+        return False
+
+    cmd = [new_proxy_cmd, username.strip().lower()]
+    rc, output = run_system_command(cmd)
+    if rc != 0:
+        logger.error(
+            "Failed to execute %s %s: rc=%s, output=%s",
+            new_proxy_cmd, username, rc, output
+        )
+        return False
+    return True
+
+
+def get_cert_details(client_dir, username, ipp_file='/var/log/openvpn/ipp.txt',
+                     proxy_file='/var/log/openvpn/proxy.txt'):
     """
     Check if certificate archive exists and return details.
     """
     filepath = os.path.join(client_dir, f"{username}.tgz")
+    ipp_map = load_ipp_map(ipp_file) if ipp_file else {}
+    ip_addr = ipp_map.get(username, ipp_map.get(username.lower(), '-'))
+    proxy_user = get_proxy_user(proxy_file) if proxy_file else None
+    is_proxy = bool(proxy_user and username.lower() == proxy_user.lower())
+
     if os.path.exists(filepath):
         try:
             stat = os.stat(filepath)
@@ -99,28 +197,36 @@ def get_cert_details(client_dir, username):
                 'size_kb': size_kb,
                 'modified': mtime,
                 'mtime_epoch': stat.st_mtime,
+                'ip': ip_addr,
+                'is_proxy': is_proxy,
             }
         except Exception as e:
             logger.error("Error reading cert file info: %s", e)
             return {
                 'exists': True, 'path': filepath,
                 'filename': f"{username}.tgz", 'size_kb': 0, 'modified': '-',
-                'mtime_epoch': 0}
+                'mtime_epoch': 0, 'ip': ip_addr, 'is_proxy': is_proxy}
     return {
         'exists': False, 'path': filepath, 'filename': f"{username}.tgz",
-        'size_kb': 0, 'modified': '-', 'mtime_epoch': 0}
+        'size_kb': 0, 'modified': '-', 'mtime_epoch': 0, 'ip': ip_addr,
+        'is_proxy': is_proxy}
 
 
-def list_client_certificates(client_dir):
+def list_client_certificates(client_dir, ipp_file='/var/log/openvpn/ipp.txt',
+                             proxy_file='/var/log/openvpn/proxy.txt'):
     """
     Scan client_dir for *.tgz files and return a list of client info dicts.
     Each dict contains: username, filename, path, size_kb, modified,
-    mtime_epoch.
+    mtime_epoch, ip, is_proxy.
     """
     clients = []
     if not os.path.exists(client_dir) or not os.path.isdir(client_dir):
         logger.warning("Client directory does not exist: %s", client_dir)
         return clients
+
+    ipp_map = load_ipp_map(ipp_file) if ipp_file else {}
+    proxy_user = get_proxy_user(proxy_file) if proxy_file else None
+    proxy_user_norm = proxy_user.strip().lower() if proxy_user else None
 
     try:
         filenames = os.listdir(client_dir)
@@ -144,6 +250,10 @@ def list_client_certificates(client_dir):
                 mtime = '-'
                 mtime_epoch = 0
 
+            ip_addr = ipp_map.get(username, ipp_map.get(username.lower(), '-'))
+            is_proxy = bool(
+                proxy_user_norm and username.lower() == proxy_user_norm)
+
             clients.append({
                 'username': username,
                 'filename': fname,
@@ -151,6 +261,8 @@ def list_client_certificates(client_dir):
                 'size_kb': size_kb,
                 'modified': mtime,
                 'mtime_epoch': mtime_epoch,
+                'ip': ip_addr,
+                'is_proxy': is_proxy,
             })
 
     # Sort alphabetically by username

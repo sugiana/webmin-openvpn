@@ -5,7 +5,7 @@ Ini sudah dicoba dengan Debian 13.
 
 Pasang paket Debian::
 
-    sudo apt install openvpn
+    sudo apt install openvpn iptables
 
 Unduh script pembuat sertifikat server::
 
@@ -14,7 +14,7 @@ Unduh script pembuat sertifikat server::
 Siapkan passphrase yaitu password untuk membuat sertifikat, boleh sama dengan
 password SSH. Lalu buat sertifikatnya::
 
-    sudo sh build-server-cert.sh vpn-server 10.8.41.0
+    sudo sh build-server-cert.sh 10.8.41.0
 
 Segment IP boleh yang lain:
 
@@ -47,10 +47,28 @@ Buat file ``/etc/openvpn/server/script/client-down``::
     iptables -t nat -D PREROUTING -p tcp -d 202.43.164.162 -m multiport ! --dports 22,80,443,1194 -j DNAT --to-destination $ifconfig_pool_remote_ip
     exit 0
 
-Jadikan keduanya executable::
+Buat file ``/etc/openvpn/server/script/check-auth`` untuk memastikan user yang
+login sesuai sertifikat::
 
-    sudo chmod +x /etc/openvpn/server/script/client-up
-    sudo chmod +x /etc/openvpn/server/script/client-down
+    #!/bin/bash
+    # OpenVPN menyediakan file kredensial via $1 jika via-file digunakan,
+    # atau membaca environment variable jika via-env digunakan.
+    # Membaca username yang dimasukkan klien
+    if [ -n "$1" ] && [ -f "$1" ]; then
+        auth_user=$(head -n 1 "$1")
+    else
+        auth_user="$username"
+    fi
+    # Validasi: Common Name sertifikat ($common_name) wajib sama persis dengan username
+    if [ -z "$common_name" ] || [ "$common_name" != "$auth_user" ]; then
+        echo "AUTH REJECTED: Certificate CN '$common_name' does not match username '$auth_user'" >&2
+        exit 1
+    fi
+    exit 0
+
+Jadikan semuanya executable::
+
+    sudo chmod +x /etc/openvpn/server/script/*
 
 Tambahkan di ``/etc/openvpn/server.conf``::
 
@@ -58,6 +76,7 @@ Tambahkan di ``/etc/openvpn/server.conf``::
     client-connect /etc/openvpn/server/script/client-up
     client-disconnect /etc/openvpn/server/script/client-down
     plugin /usr/lib/openvpn/openvpn-plugin-auth-pam.so login
+    auth-user-pass-verify /etc/openvpn/server/script/check-auth via-file
 
 Baris terakhir itu untuk mewajibkan user memasukkan username dan password.
 
@@ -82,29 +101,66 @@ Unduh script-nya::
 
 Jalankan dengan pola::
 
-    sudo build-client-cert <nama-client> <ip-publik> [login] [proxy] [adduser] [pass=<password>]
+    sudo build-client-cert <nama-client> [login] [proxy] [adduser] [pass=<password>]
 
 Penjelasan:
 
 1. ``<nama-client>`` ini bebas, tapi sebaiknya hanya huruf, angka, dan karakter minus.
-2. ``<ip-publik>`` adalah IP saat kita ssh ke server ini.
-3. ``[login]`` bila server mewajibkan login
-4. ``[proxy]`` bila server sebagai proxy
-5. ``[adduser]`` untuk membuat user ``<nama-client>``. Ini adalah user Linux
+2. ``[login]`` bila server mewajibkan login
+3. ``[proxy]`` bila server sebagai proxy
+4. ``[adduser]`` untuk membuat user ``<nama-client>``. Ini adalah user Linux
    yang terdaftar di file ``/etc/passwd``.
-6. ``[pass=<password>]`` ini password untuk poin 5. Jika tidak disertakan maka
+5. ``[pass=<password>]`` ini password untuk poin 5. Jika tidak disertakan maka
    akan ditanya saat pembuatan (mode interaktif). 
    
 Contoh::
 
-    sudo build-client-cert sugiana 202.43.164.162 login proxy adduser pass=G4do-gado
+    sudo build-client-cert sugiana login proxy adduser pass=G4do-gado
 
 Selanjutnya sertifikat ada di direktori ``/etc/openvpn/client``. Salinannya ada
 di ``/root`` untuk memudahkan ``scp``.
 
-Untuk sertifikat berikutnya tak perlu menyebutkan IP karena template
-``/etc/openvpn/server/client.ovpn`` sudah terbentuk::
 
-    sudo build-client-cert pc1 login proxy adduser pass=K4redok
+Multi Client
+------------
+
+Konfigurasi ``server.conf`` sebelumnya beranggapan hanya ada 1 client. Meskipun
+ada client ke-2, ke-3, dst maka client terakhir yang mendapat reverse proxy.
+
+Untuk itu kini kita tetapkan hanya username yang tercatat di file
+``/var/log/openvpn/proxy.txt`` saja yang mendapat reverse proxy maupun akses
+proxy. Client lain tetap dapat saling terhubung dengan akses Internet dari ISP
+masing-masing.
+
+File ini hanya berisi sebuah username, misalkan ``sugiana``. Ini bisa diisi
+dengan cara::
+
+    sudo su
+    echo sugiana > /var/log/openvpn/proxy.txt
+
+Kemudian file ``/etc/openvpn/server/script/client-up`` berisi ini::
+
+    #!/bin/sh
+    if [ -f /var/log/openvpn/proxy.txt ]; then
+        proxy_user=$(cat /var/log/openvpn/proxy.txt)
+        if [ "$common_name" = "$proxy_user" ]; then
+            /usr/local/bin/new-proxy-user $ifconfig_pool_remote_ip
+        fi
+    fi
+
+Salin file untuk menjalankan ``iptables``::
+
+    sudo cp new-proxy-user /usr/local/bin/
+
+Hapus baris ``client-disconnect`` di ``/etc/openvpn/server.conf`` sehingga menjadi::
+
+    script-security 3
+    client-connect /etc/openvpn/server/script/client-up
+    plugin /usr/lib/openvpn/openvpn-plugin-auth-pam.so login
+    auth-user-pass-verify /etc/openvpn/script/check-auth via-file
+
+Restart::
+
+    sudo systemctl restart openvpn@server
 
 Semoga dipahami.
