@@ -1,9 +1,10 @@
 #!/bin/bash
 
 NEW_USER=$1
+NEW_PORTS=$2
 IP_FILE="/var/log/openvpn/ipp.txt"
 PROXY_FILE="/var/log/openvpn/proxy.txt"
-KECUALI_PORT="22,80,443,1194"
+EXCLUDE_PORTS="22,80,443,1194"
 
 
 is_ip() {
@@ -30,19 +31,47 @@ if [ ! -f "$IP_FILE" ]; then
 fi
 IP_LIST=$(awk -F',' 'NF >= 2 {print $2}' "$IP_FILE")
 
+if [ -f "$PROXY_FILE" ]; then
+    OLD_USER=$(cat $PROXY_FILE | awk -F':' '{print $1}')
+    OLD_PORTS=$(cat $PROXY_FILE | awk -F':' '{print $2}')
+    OLD_USER_IP=$(grep ^$OLD_USER, $IP_FILE)
+    if [ -n "$OLD_USER_IP" ]; then
+        OLD_IP=$(echo $OLD_USER_IP | awk -F',' 'NF >= 2 {print $2}')
+    else
+        OLD_IP=""
+    fi
+else
+    OLD_USER=""
+    OLD_PORTS=""
+fi
+ 
 is_ip $NEW_USER
 status=$?
 if [ $status -eq 0 ]; then
-    NEW_PROXY_CLIENT_IP=$NEW_USER
-    NEW_USER_IP=$(grep $NEW_PROXY_CLIENT_IP, $IP_FILE)
+    NEW_IP=$NEW_USER
+    NEW_USER_IP=$(grep $NEW_IP, $IP_FILE)
     if [ -n "$NEW_USER_IP" ]; then
         NEW_USER=$(echo $NEW_USER_IP | awk -F',' 'NF >= 2 {print $1}')
     else
         NEW_USER=""
     fi
 else
-    NEW_PROXY_CLIENT_IP=""
+    NEW_USER_IP=$(grep ^$NEW_USER, $IP_FILE)
+    if [ -n "$NEW_USER_IP" ]; then
+        NEW_IP=$(echo $NEW_USER_IP | awk -F',' 'NF >= 2 {print $2}')
+    else
+        NEW_IP=""
+        echo "User $NEW_USER belum pernah terhubung."
+    fi
 fi
+
+echo "New User: $NEW_USER"
+echo "New IP: $NEW_IP"
+echo "New Ports: $NEW_PORTS"
+
+echo "Old User: $OLD_USER"
+echo "Old IP: $OLD_IP"
+echo "Old Ports: $OLD_PORTS"
 
 echo "Dapatkan IP publik ..."
 cmd="curl -s -4 ifconfig.me"
@@ -63,11 +92,16 @@ is_proxy() {
 
 is_reverse_proxy() {
     local ip=$1
-    if `iptables -t nat -C PREROUTING -p tcp -d $PUBLIC_IP -m multiport ! --dports $KECUALI_PORT -j DNAT --to-destination $ip >/dev/null 2>&1`; then
+    if `iptables -t nat -C PREROUTING -p tcp -d $PUBLIC_IP -m multiport ! --dports $EXCLUDE_PORTS -j DNAT --to-destination $ip >/dev/null 2>&1`; then
         return 0
     else
-        return 1 
+        if [ -n "$OLD_PORTS" ]; then
+            if `iptables -t nat -C PREROUTING -p tcp -d $PUBLIC_IP -m multiport --dports $OLD_PORTS -j DNAT --to-destination $ip >/dev/null 2>&1`; then
+                return 0
+            fi
+        fi
     fi
+    return 1 
 }
 
 
@@ -83,7 +117,11 @@ reject_proxy() {
 reject_reverse_proxy() {
     local ip=$1
     echo "Hapus izin Internet mengakses $ip (reverse proxy) ..."
-    cmd="iptables -t nat -D PREROUTING -p tcp -d $PUBLIC_IP -m multiport ! --dports $KECUALI_PORT -j DNAT --to-destination $ip"
+    if [ -n "$OLD_PORTS" ]; then
+        cmd="iptables -t nat -D PREROUTING -p tcp -d $PUBLIC_IP -m multiport --dports $OLD_PORTS -j DNAT --to-destination $ip"
+    else
+        cmd="iptables -t nat -D PREROUTING -p tcp -d $PUBLIC_IP -m multiport ! --dports $EXCLUDE_PORTS -j DNAT --to-destination $ip"
+    fi
     echo $cmd
     eval $cmd || exit 1
 }
@@ -100,81 +138,75 @@ allow_proxy() {
 
 allow_reverse_proxy() {
     local ip=$1
-    echo "Izinkan Internet mengakses $ip (reverse proxy) kecuali port $KECUALI_PORT ..."
-    cmd="iptables -t nat -A PREROUTING -p tcp -d $PUBLIC_IP -m multiport ! --dports $KECUALI_PORT -j DNAT --to-destination $ip"
+    if [ -n "$NEW_PORTS" ]; then
+        echo "Izinkan Internet mengakses $ip (reverse proxy) port $NEW_PORTS ..."
+        cmd="iptables -t nat -A PREROUTING -p tcp -d $PUBLIC_IP -m multiport --dports $NEW_PORTS -j DNAT --to-destination $ip"
+    else
+        echo "Izinkan Internet mengakses $ip (reverse proxy) kecuali port $EXCLUDE_PORTS ..."
+        cmd="iptables -t nat -A PREROUTING -p tcp -d $PUBLIC_IP -m multiport ! --dports $EXCLUDE_PORTS -j DNAT --to-destination $ip"
+    fi
     echo $cmd
     eval $cmd || exit 1
 }
  
 
-# Hapus rule proxy user lama
+# Hapus rule proxy lama
 IS_CHANGED=""
-if [ -f "$PROXY_FILE" ]; then
-    OLD_USER=$(cat $PROXY_FILE)
-    if [ "$OLD_USER" = "$NEW_USER" ]; then
-        echo "User proxy masih sama."
+if [ -n "$OLD_USER" ]; then
+    if [ "$NEW_USER" = "$OLD_USER"  ] && [ "$NEW_PORTS" = "$OLD_PORTS" ]; then
+        echo "Rule proxy masih sama."
         exit 0 
     fi
-    OLD_USER_IP=$(grep ^$OLD_USER, $IP_FILE)
-    if [ -n "$OLD_USER_IP" ]; then
-        OLD_PROXY_CLIENT_IP=$(echo $OLD_USER_IP | awk -F',' 'NF >= 2 {print $2}')
-        is_proxy $OLD_PROXY_CLIENT_IP
-        status=$?
-        if [ $status -eq 0 ]; then
-            reject_proxy $OLD_PROXY_CLIENT_IP
-            IS_CHANGED="y"
+    if [ -n "$OLD_IP" ]; then
+        if [ ! "$OLD_IP" = "$NEW_IP" ]; then
+            is_proxy $OLD_IP
+            status=$?
+            if [ $status -eq 0 ]; then
+                reject_proxy $OLD_IP
+                IS_CHANGED="y"
+            fi
         fi
-        is_reverse_proxy $OLD_PROXY_CLIENT_IP
+        is_reverse_proxy $OLD_IP
         status=$?
         if [ $status -eq 0 ]; then
-            reject_reverse_proxy $OLD_PROXY_CLIENT_IP
+            reject_reverse_proxy $OLD_IP
             IS_CHANGED="y"
         fi
     fi
 fi
 
-if [ -z "$NEW_PROXY_CLIENT_IP" ]; then
-    NEW_USER_IP=$(grep ^$NEW_USER, $IP_FILE)
-    if [ -n "$NEW_USER_IP" ]; then
-        NEW_PROXY_CLIENT_IP=$(echo $NEW_USER_IP | awk -F',' 'NF >= 2 {print $2}')
-    else
-        NEW_PROXY_CLIENT_IP=""
-        echo "User $NEW_USER belum pernah terhubung."
-    fi
-fi
-
-IS_PROXY_CLIENT_IP=""
-IS_REVERSE_PROXY_CLIENT_IP=""
-for CLIENT_IP in $IP_LIST; do
-    is_proxy $CLIENT_IP
+IS_PROXY=""
+IS_REVERSE_PROXY=""
+for ip in $IP_LIST; do
+    is_proxy $ip
     status=$?
     if [ $status -eq 0 ]; then
-        if [ "$CLIENT_IP" = "$NEW_PROXY_CLIENT_IP" ]; then
-            IS_PROXY_CLIENT_IP="y"
+        if [ "$ip" = "$NEW_IP" ]; then
+            IS_PROXY="y"
         else
-            reject_proxy $CLIENT_IP
+            reject_proxy $ip
             IS_CHANGED="y"
         fi
     fi
-    is_reverse_proxy $CLIENT_IP
+    is_reverse_proxy $ip
     status=$?
     if [ $status -eq 0 ]; then
-        if [ "$CLIENT_IP" = "$NEW_PROXY_CLIENT_IP" ]; then
-            IS_REVERSE_PROXY_CLIENT_IP="y"
+        if [ "$ip" = "$NEW_IP" ]; then
+            IS_REVERSE_PROXY="y"
         else
-            reject_reverse_proxy $CLIENT_IP
+            reject_reverse_proxy $ip
             IS_CHANGED="y"
         fi
     fi
 done
 
-if [ -n "$NEW_PROXY_CLIENT_IP" ]; then
-    if [ -z "$IS_PROXY_CLIENT_IP" ]; then
-        allow_proxy $NEW_PROXY_CLIENT_IP
+if [ -n "$NEW_IP" ]; then
+    if [ -z "$IS_PROXY" ]; then
+        allow_proxy $NEW_IP
         IS_CHANGED="y"
     fi
-    if [ -z "$IS_REVERSE_PROXY_CLIENT_IP" ]; then
-        allow_reverse_proxy $NEW_PROXY_CLIENT_IP
+    if [ -z "$IS_REVERSE_PROXY" ]; then
+        allow_reverse_proxy $NEW_IP
         IS_CHANGED="y"
     fi
 fi
@@ -188,10 +220,18 @@ else
     echo "Rule masih sama."
 fi
 
-if [ ! "$OLD_USER" = "$NEW_USER" ]; then
+if [ "$NEW_USER" = "$OLD_USER"  ] && [ "$NEW_PORTS" = "$OLD_PORTS" ]; then
+    echo "User dan port masih sama"
+else
     if [ -n "$NEW_USER" ]; then
-        cmd="echo $NEW_USER > $PROXY_FILE"
+        if [ -n "$NEW_PORTS" ]; then
+            cmd="echo $NEW_USER:$NEW_PORTS > $PROXY_FILE"
+        else
+            cmd="echo $NEW_USER > $PROXY_FILE"
+        fi
         echo $cmd
         eval $cmd
+    else
+        echo "IP $NEW_IP belum ada usernya"
     fi
 fi

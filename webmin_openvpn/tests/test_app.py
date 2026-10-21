@@ -355,6 +355,10 @@ class TestWebminOpenVPN(unittest.TestCase):
             self.assertTrue(res2)
             mock_cmd.assert_called_with([
                 '/usr/local/bin/new-proxy-user', 'husein'])
+            res3 = set_proxy_user('sugiana', ports='7070,6543')
+            self.assertTrue(res3)
+            mock_cmd.assert_called_with([
+                '/usr/local/bin/new-proxy-user', 'sugiana', '7070,6543'])
 
     def test_edit_and_change_password_min_length(self):
         """Test edit user password and change own password min 8 characters
@@ -857,3 +861,150 @@ class TestWebminOpenVPN(unittest.TestCase):
                 db.commit()
         finally:
             db.close()
+
+    def test_reverse_proxy_ports_utils(self):
+        """Test utils functions for get_proxy_info, get_proxy_user, and
+        get_proxy_ports."""
+        from webmin_openvpn.utils import (
+            get_proxy_info,
+            get_proxy_user,
+            get_proxy_ports,
+        )
+
+        test_file = os.path.join(self.test_client_dir, 'utils_proxy_test.txt')
+        if os.path.exists(test_file):
+            os.remove(test_file)
+
+        # 1. Non-existent file returns (None, None)
+        self.assertEqual(get_proxy_info(test_file), (None, None))
+        self.assertIsNone(get_proxy_user(test_file))
+        self.assertIsNone(get_proxy_ports(test_file))
+
+        # 2. File with username only
+        with open(test_file, 'w') as f:
+            f.write("sugiana\n")
+        self.assertEqual(get_proxy_info(test_file), ('sugiana', None))
+        self.assertEqual(get_proxy_user(test_file), 'sugiana')
+        self.assertIsNone(get_proxy_ports(test_file))
+
+        # 3. File with username:ports
+        with open(test_file, 'w') as f:
+            f.write("sugiana:7070,6543\n")
+        self.assertEqual(get_proxy_info(test_file), ('sugiana', '7070,6543'))
+        self.assertEqual(get_proxy_user(test_file), 'sugiana')
+        self.assertEqual(get_proxy_ports(test_file), '7070,6543')
+
+    def test_admin_reverse_proxy_ports_flow(self):
+        """Test admin reverse proxy ports modal, save custom ports, and save
+        all ports."""
+        admin_app = webtest.TestApp(self.app)
+        admin_app.post(
+            '/login', {'username': 'admin', 'password': 'admin'}, status=302)
+
+        # 1. Verify /admin/users renders the modal and proxy badge
+        users_res = admin_app.get('/admin/users', status=200)
+        self.assertIn('data-bs-target="#proxyPortsModal"', users_res.text)
+        self.assertIn('proxyPortsModalLabel', users_res.text)
+        self.assertIn(
+            'Forward semua port kecuali 22, 80, 443, 1194', users_res.text)
+        self.assertIn('Hanya forward port tertentu', users_res.text)
+        self.assertIn('id="reverseProxyPortsInput"', users_res.text)
+
+        # 2. Save custom ports: 6969,8081
+        def fake_set_proxy_custom(username, ports=None, **kwargs):
+            content = f"{username}:{ports}\n" if ports else f"{username}\n"
+            with open(self.test_proxy_file, 'w') as f:
+                f.write(content)
+            return True
+
+        with patch(
+                'webmin_openvpn.views.admin.set_proxy_user',
+                side_effect=fake_set_proxy_custom):
+            post_custom = admin_app.post(
+                '/admin/users/proxy-ports',
+                {
+                    'username': 'sampleuser',
+                    'proxy_port_mode': 'custom',
+                    'reverse_proxy_ports': '6969,8081',
+                },
+                status=302,
+            )
+            self.assertIn('/admin/users', post_custom.location)
+            users_after_custom = post_custom.follow(status=200)
+            self.assertIn('6969,8081', users_after_custom.text)
+            self.assertIn(
+                'font-monospace badge-proxy-clickable',
+                users_after_custom.text)
+            with open(self.test_proxy_file, 'r') as f:
+                self.assertEqual(f.read().strip(), 'sampleuser:6969,8081')
+
+        # 3. Save all ports (pilihan 1): runs new-proxy-user sampleuser without
+        # ports
+        def fake_set_proxy_all(username, ports=None, **kwargs):
+            content = f"{username}\n"
+            with open(self.test_proxy_file, 'w') as f:
+                f.write(content)
+            return True
+
+        with patch(
+                'webmin_openvpn.views.admin.set_proxy_user',
+                side_effect=fake_set_proxy_all):
+            post_all = admin_app.post(
+                '/admin/users/proxy-ports',
+                {
+                    'username': 'sampleuser',
+                    'proxy_port_mode': 'all',
+                    'reverse_proxy_ports': '',
+                },
+                status=302,
+            )
+            self.assertIn('/admin/users', post_all.location)
+            users_after_all = post_all.follow(status=200)
+            self.assertIn(
+                'Pengaturan proxy untuk "sampleuser" berhasil disimpan',
+                users_after_all.text)
+            with open(self.test_proxy_file, 'r') as f:
+                self.assertEqual(f.read().strip(), 'sampleuser')
+
+        # 4. Validation: Empty ports for custom mode
+        post_empty = admin_app.post(
+            '/admin/users/proxy-ports',
+            {
+                'username': 'sampleuser',
+                'proxy_port_mode': 'custom',
+                'reverse_proxy_ports': '',
+            },
+            status=302,
+        )
+        res_empty = post_empty.follow(status=200)
+        self.assertIn('Port tidak boleh kosong', res_empty.text)
+
+        # 5. Validation: Invalid characters for custom mode
+        post_invalid_chars = admin_app.post(
+            '/admin/users/proxy-ports',
+            {
+                'username': 'sampleuser',
+                'proxy_port_mode': 'custom',
+                'reverse_proxy_ports': '6969,abc',
+            },
+            status=302,
+        )
+        res_invalid_chars = post_invalid_chars.follow(status=200)
+        self.assertIn('Format port tidak valid', res_invalid_chars.text)
+
+        # 6. Validation: Invalid port range
+        post_invalid_range = admin_app.post(
+            '/admin/users/proxy-ports',
+            {
+                'username': 'sampleuser',
+                'proxy_port_mode': 'custom',
+                'reverse_proxy_ports': '6969,70000',
+            },
+            status=302,
+        )
+        res_invalid_range = post_invalid_range.follow(status=200)
+        self.assertIn('Nomor port tidak valid', res_invalid_range.text)
+
+        # 7. GET request redirects to /admin/users
+        get_res = admin_app.get('/admin/users/proxy-ports', status=302)
+        self.assertIn('/admin/users', get_res.location)

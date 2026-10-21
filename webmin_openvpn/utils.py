@@ -147,13 +147,16 @@ def is_no_more_proxy(settings):
     return str(val).strip().lower() in ('true', 'yes', '1', 't')
 
 
-def get_proxy_user(proxy_file='/var/log/openvpn/proxy.txt'):
+def get_proxy_info(proxy_file='/var/log/openvpn/proxy.txt'):
     """
-    Read the single proxy-enabled username from proxy_file.
-    Returns username string or None if not set or empty.
+    Read proxy-enabled user and optional ports from proxy_file.
+    Format in proxy_file can be:
+      - 'username'
+      - 'username:port1,port2,...'
+    Returns tuple: (username, ports) or (None, None).
     """
     if not proxy_file:
-        return None
+        return None, None
 
     content = ""
     if os.path.exists(proxy_file):
@@ -171,25 +174,66 @@ def get_proxy_user(proxy_file='/var/log/openvpn/proxy.txt'):
         if rc == 0:
             content = out
 
-    user = content.strip().splitlines()[0].strip() if content.strip() else None
+    first_line = content.strip().splitlines()[0].strip() \
+        if content.strip() else ""
+    if not first_line:
+        return None, None
+
+    if ':' in first_line:
+        parts = first_line.split(':', 1)
+        user = parts[0].strip() or None
+        ports = parts[1].strip() or None
+        return user, ports
+    else:
+        return first_line.strip(), None
+
+
+def get_proxy_user(proxy_file='/var/log/openvpn/proxy.txt'):
+    """
+    Read the single proxy-enabled username from proxy_file.
+    Returns username string or None if not set or empty.
+    """
+    user, _ = get_proxy_info(proxy_file)
     return user
 
 
-def set_proxy_user(username, new_proxy_cmd='/usr/local/bin/new-proxy-user',
+def get_proxy_ports(proxy_file='/var/log/openvpn/proxy.txt'):
+    """
+    Read the reverse proxy ports from proxy_file if format is 'username:ports'.
+    Returns comma-separated ports string or None if not set.
+    """
+    _, ports = get_proxy_info(proxy_file)
+    return ports
+
+
+# Alias for backward compatibility if needed
+get_reverse_proxy_ports = get_proxy_ports
+
+
+def set_proxy_user(username, ports=None,
+                   new_proxy_cmd='/usr/local/bin/new-proxy-user',
                    proxy_file=None):
     """
-    Execute /usr/local/bin/new-proxy-user [username] to set the proxy-enabled
-    user. The script handles saving the user to /var/log/openvpn/proxy.txt.
+    Execute new_proxy_cmd [username] [ports] to set the proxy-enabled
+    user. If ports is provided, executes:
+      /usr/local/bin/new-proxy-user [username] [ports]
+    Otherwise:
+      /usr/local/bin/new-proxy-user [username]
+    The script handles saving the user (and optional ports) to
+    /var/log/openvpn/proxy.txt.
     """
     if not username:
         return False
 
     cmd = [new_proxy_cmd, username.strip().lower()]
+    if ports:
+        cmd.append(ports.strip())
+
     rc, output = run_system_command(cmd)
     if rc != 0:
         logger.error(
-            "Failed to execute %s %s: rc=%s, output=%s",
-            new_proxy_cmd, username, rc, output
+            "Failed to execute %s: rc=%s, output=%s",
+            " ".join(cmd), rc, output
         )
         return False
     return True

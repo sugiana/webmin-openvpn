@@ -50,14 +50,27 @@
                                 <td class="text-muted small">${repeat.c.number}</td>
                                 <td>
                                     <div class="d-flex align-items-center gap-2">
-                                        <div class="avatar-circle bg-light text-primary rounded-circle d-flex align-items-center justify-content-center fw-bold" style="width:34px; height:34px;">
+                                        <div class="avatar-circle bg-light text-primary rounded-circle d-flex align-items-center justify-content-center fw-bold flex-shrink-0" style="width:34px; height:34px;">
                                             ${c['username'][:2].upper()}
                                         </div>
-                                        <div class="d-flex align-items-center gap-2">
-                                            <span class="fw-bold text-dark">${c['username']}</span>
-                                            <span tal:condition="not show_proxy_option and c.get('is_proxy')" class="badge bg-warning text-dark border border-warning-subtle">
-                                                <i class="bi bi-shield-shaded me-1"></i>Proxy
-                                            </span>
+                                        <div>
+                                            <span class="fw-bold text-dark d-block">${c['username']}</span>
+                                            <div tal:condition="not show_proxy_option and c.get('is_proxy')" class="d-flex align-items-center gap-1 mt-1">
+                                                <span class="badge bg-warning text-dark border border-warning-subtle badge-proxy-clickable" 
+                                                      data-bs-toggle="modal" 
+                                                      data-bs-target="#proxyPortsModal" 
+                                                      role="button" 
+                                                      tabindex="0"
+                                                      title="Klik untuk konfigurasi port reverse proxy"><i class="bi bi-shield-shaded me-1"></i>Proxy</span>
+                                                <span tal:condition="reverse_proxy_ports" 
+                                                      class="badge bg-light text-dark border font-monospace badge-proxy-clickable" 
+                                                      data-bs-toggle="modal" 
+                                                      data-bs-target="#proxyPortsModal" 
+                                                      role="button" 
+                                                      tabindex="0"
+                                                      title="Klik untuk konfigurasi port reverse proxy" 
+                                                      style="font-size: 0.75rem;">${reverse_proxy_ports}</span>
+                                            </div>
                                         </div>
                                     </div>
                                 </td>
@@ -124,8 +137,91 @@
             </div>
 
             <div class="card-footer bg-light p-3 text-muted small border-0 d-flex justify-content-between align-items-center">
-                <span>Direktori sertifikat: <code>${client_dir}</code> | Berkas IP: <code>${ipp_file}</code> | Proxy: <strong class="text-dark">${proxy_user or 'Belum ada'}</strong></span>
+                <span>Direktori sertifikat: <code>${client_dir}</code> | Berkas IP: <code>${ipp_file}</code> | Proxy: <strong class="text-dark">${proxy_user or 'Belum ada'}</strong><span tal:condition="proxy_user and reverse_proxy_ports" class="badge bg-secondary-subtle text-secondary border ms-1 font-monospace" style="font-size:0.75rem;">Port: ${reverse_proxy_ports}</span></span>
                 <span>Total: <strong>${len(clients)}</strong> klien OpenVPN</span>
+            </div>
+        </div>
+
+        <!-- Modal Pengaturan Port Reverse Proxy -->
+        <div class="modal fade" id="proxyPortsModal" tabindex="-1" aria-labelledby="proxyPortsModalLabel" aria-hidden="true">
+            <div class="modal-dialog modal-dialog-centered">
+                <div class="modal-content border-0 shadow-lg rounded-4 overflow-hidden">
+                    <div class="modal-header bg-white border-bottom px-4 pt-4 pb-3">
+                        <div class="d-flex align-items-center gap-2">
+                            <span class="bg-warning-subtle text-dark rounded-3 p-2 d-inline-flex align-items-center justify-content-center">
+                                <i class="bi bi-shield-shaded fs-5 text-warning"></i>
+                            </span>
+                            <div>
+                                <h5 class="modal-title fw-bold text-dark mb-0" id="proxyPortsModalLabel">Pengaturan Port Reverse Proxy</h5>
+                                <span tal:condition="proxy_user" class="text-muted small">Klien proxy aktif: <strong class="text-dark">${proxy_user}</strong></span>
+                            </div>
+                        </div>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                    </div>
+                    <form method="POST" action="${request.route_url('admin_reverse_proxy_ports')}" id="proxyPortsForm">
+                        <input type="hidden" name="username" value="${proxy_user or ''}" />
+                        <div class="modal-body p-4">
+                            <p class="text-muted small mb-3">
+                                Pilih mode penerusan port (forwarding) reverse proxy:
+                            </p>
+
+                            <!-- Option 1: Forward semua port kecuali 22, 80, 443, 1194 -->
+                            <div class="form-check p-3 rounded-3 border mb-3 ${'bg-light-subtle border-primary-subtle' if not reverse_proxy_ports else 'border-light-subtle'}">
+                                <input class="form-check-input" type="radio" name="proxy_port_mode" id="proxyPortModeAll" value="all" ${'checked' if not reverse_proxy_ports else ''} />
+                                <label class="form-check-label fw-semibold text-dark user-select-none d-block" for="proxyPortModeAll" style="cursor: pointer;">
+                                    Forward semua port kecuali 22, 80, 443, 1194 <span class="badge bg-secondary-subtle text-secondary border ms-1 fw-normal" style="font-size:0.7rem;">default</span>
+                                </label>
+                                <div class="text-muted small mt-1">
+                                    Meneruskan seluruh port publik ke klien OpenVPN, kecuali port SSH (22), HTTP (80), HTTPS (443), dan OpenVPN (1194).
+                                </div>
+                            </div>
+
+                            <!-- Option 2: Hanya forward port tertentu -->
+                            <div class="form-check p-3 rounded-3 border ${'bg-light-subtle border-primary-subtle' if reverse_proxy_ports else 'border-light-subtle'}">
+                                <input class="form-check-input" type="radio" name="proxy_port_mode" id="proxyPortModeCustom" value="custom" ${'checked' if reverse_proxy_ports else ''} />
+                                <label class="form-check-label fw-semibold text-dark user-select-none d-block" for="proxyPortModeCustom" style="cursor: pointer;">
+                                    Hanya forward port tertentu
+                                </label>
+                                <div class="text-muted small mt-1 mb-3">
+                                    Hanya port-port yang didaftarkan di bawah ini yang akan diteruskan ke klien OpenVPN.
+                                </div>
+
+                                <div id="customPortsWrapper" class="mt-2">
+                                    <label for="reverseProxyPortsInput" class="form-label small fw-semibold text-secondary mb-1">
+                                        Daftar Port:
+                                    </label>
+                                    <div class="input-group">
+                                        <span class="input-group-text bg-light border-end-0 text-muted">
+                                            <i class="bi bi-hdd-network"></i>
+                                        </span>
+                                        <input 
+                                            type="text" 
+                                            class="form-control bg-light border-start-0 font-monospace" 
+                                            id="reverseProxyPortsInput" 
+                                            name="reverse_proxy_ports" 
+                                            placeholder="contoh: 6969,8081" 
+                                            value="${reverse_proxy_ports or ''}" 
+                                            autocomplete="off"
+                                        />
+                                    </div>
+                                    <div class="form-text small text-muted mt-1">
+                                        Hanya bisa diisi angka dan koma (contoh: <code>6969,8081</code>).
+                                    </div>
+                                    <div class="invalid-feedback" id="portsErrorFeedback" style="display: none;">
+                                        Harap masukkan nomor port yang valid.
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="modal-footer bg-light border-0 px-4 py-3 d-flex justify-content-between">
+                            <button type="button" class="btn btn-outline-secondary px-4 rounded-3" data-bs-dismiss="modal">Batal</button>
+                            <button type="submit" class="btn btn-primary px-4 rounded-3 shadow-sm d-flex align-items-center gap-2" id="btnSaveProxyPorts">
+                                <i class="bi bi-check2-circle"></i>
+                                <span>Simpan</span>
+                            </button>
+                        </div>
+                    </form>
+                </div>
             </div>
         </div>
 

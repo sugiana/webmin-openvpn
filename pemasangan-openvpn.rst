@@ -129,22 +129,28 @@ ada client ke-2, ke-3, dst maka client terakhir yang mendapat reverse proxy.
 
 Untuk itu kini kita tetapkan hanya username yang tercatat di file
 ``/var/log/openvpn/proxy.txt`` saja yang mendapat reverse proxy maupun akses
-proxy. Client lain tetap dapat saling terhubung dengan akses Internet dari ISP
-masing-masing.
+proxy biasa (forward proxy). Client lain tetap dapat saling terhubung dengan
+akses Internet dari ISP masing-masing.
 
-File ini hanya berisi sebuah username, misalkan ``sugiana``. Ini bisa diisi
+File ini berisi sebuah username, misalkan ``sugiana``. Ini bisa diisi
 dengan cara::
 
     sudo su
     echo sugiana > /var/log/openvpn/proxy.txt
 
+Jika reverse proxy hanya port tertentu maka::
+
+    echo sugiana:7070,6543
+
 Kemudian file ``/etc/openvpn/server/script/client-up`` berisi ini::
 
     #!/bin/sh
-    if [ -f /var/log/openvpn/proxy.txt ]; then
-        proxy_user=$(cat /var/log/openvpn/proxy.txt)
-        if [ "$common_name" = "$proxy_user" ]; then
-            /usr/local/bin/new-proxy-user $ifconfig_pool_remote_ip
+    PROXY_FILE="/var/log/openvpn/proxy.txt"
+    if [ -f $PROXY_FILE ]; then
+        USER=$(cat $PROXY_FILE | awk -F':' '{print $1}')
+        if [ "$common_name" = "$USER" ]; then
+            PORTS=$(cat $PROXY_FILE | awk -F':' '{print $2}')
+            /usr/local/bin/new-proxy-user $ifconfig_pool_remote_ip $PORTS
         fi
     fi
 

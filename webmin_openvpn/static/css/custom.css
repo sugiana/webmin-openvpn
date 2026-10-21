@@ -106,3 +106,20 @@ pre {
     font-size: 0.85rem;
     line-height: 1.5;
 }
+
+/* Clickable Proxy Badge */
+.badge-proxy-clickable {
+    cursor: pointer;
+    transition: all 0.2s ease-in-out;
+}
+
+.badge-proxy-clickable:hover {
+    transform: scale(1.05);
+    box-shadow: 0 4px 10px rgba(217, 119, 6, 0.3) !important;
+    filter: brightness(0.97);
+}
+
+.badge-proxy-clickable:active {
+    transform: scale(0.98);
+}
+

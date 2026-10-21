@@ -20,6 +20,8 @@ from ..utils import (
     is_linux_user_exists,
     get_system_stats,
     get_proxy_user,
+    get_proxy_info,
+    get_proxy_ports,
     set_proxy_user,
     revoke_user,
     is_proxy_file_exists,
@@ -250,6 +252,8 @@ def admin_users_view(request):
             c['status_time'] = '-'
             c['terhubung'] = None
 
+    proxy_user, reverse_proxy_ports = get_proxy_info(proxy_file)
+
     return {
         'user': request.user,
         'clients': clients,
@@ -258,6 +262,7 @@ def admin_users_view(request):
         'proxy_file': proxy_file,
         'proxy_user': proxy_user,
         'show_proxy_option': show_proxy_option,
+        'reverse_proxy_ports': reverse_proxy_ports,
     }
 
 
@@ -416,6 +421,122 @@ def admin_set_proxy_view(request):
             f'Gagal memperbarui proxy untuk "{username}".',
             'danger',
         )
+
+    return HTTPFound(location=request.route_url('admin_users'))
+
+
+@view_config(
+    route_name='admin_reverse_proxy_ports',
+    permission='admin',
+)
+def admin_reverse_proxy_ports_view(request):
+    """
+    Admin: Mengatur reverse proxy ports.
+    Pilihan 1: /usr/local/bin/new-proxy-user [username]
+    Pilihan 2: /usr/local/bin/new-proxy-user [username] [ports]
+    """
+    if request.method != 'POST':
+        return HTTPFound(location=request.route_url('admin_users'))
+
+    settings = request.registry.settings
+    proxy_file = settings.get(
+        'openvpn.proxy_file', '/var/log/openvpn/proxy.txt')
+    new_proxy_cmd = settings.get(
+        'openvpn.new_proxy_cmd', '/usr/local/bin/new-proxy-user')
+
+    username = request.params.get('username', '').strip().lower()
+    if not username:
+        username = get_proxy_user(proxy_file)
+
+    if not username:
+        request.session.flash('Tidak ada user proxy yang aktif.', 'danger')
+        return HTTPFound(location=request.route_url('admin_users'))
+
+    mode = request.params.get('proxy_port_mode', 'all').strip()
+
+    if mode == 'all':
+        success = set_proxy_user(
+            username,
+            ports=None,
+            new_proxy_cmd=new_proxy_cmd,
+            proxy_file=proxy_file,
+        )
+        if success:
+            request.session.flash(
+                f'Pengaturan proxy untuk "{username}" berhasil disimpan: '
+                'Forward semua port kecuali 22, 80, 443, 1194.',
+                'success',
+            )
+        else:
+            request.session.flash(
+                f'Gagal memperbarui pengaturan proxy untuk "{username}".',
+                'danger',
+            )
+    elif mode == 'custom':
+        raw_ports = request.params.get('reverse_proxy_ports', '').strip()
+        if not raw_ports:
+            request.session.flash(
+                'Port tidak boleh kosong jika memilih forward port tertentu.',
+                'danger',
+            )
+            return HTTPFound(location=request.route_url('admin_users'))
+
+        if not re.match(r'^[0-9,]+$', raw_ports):
+            request.session.flash(
+                'Format port tidak valid. Hanya angka dan koma yang '
+                'diperbolehkan.',
+                'danger',
+            )
+            return HTTPFound(location=request.route_url('admin_users'))
+
+        port_list = [p.strip() for p in raw_ports.split(',') if p.strip()]
+        if not port_list:
+            request.session.flash(
+                'Daftar port tidak boleh kosong.',
+                'danger',
+            )
+            return HTTPFound(location=request.route_url('admin_users'))
+
+        invalid_ports = []
+        valid_ports = []
+        for p in port_list:
+            try:
+                p_num = int(p)
+                if 1 <= p_num <= 65535:
+                    valid_ports.append(str(p_num))
+                else:
+                    invalid_ports.append(p)
+            except ValueError:
+                invalid_ports.append(p)
+
+        if invalid_ports:
+            request.session.flash(
+                f'Nomor port tidak valid (harus antara 1 dan 65535): '
+                f'{", ".join(invalid_ports)}',
+                'danger',
+            )
+            return HTTPFound(location=request.route_url('admin_users'))
+
+        ports_str = ",".join(valid_ports)
+        success = set_proxy_user(
+            username,
+            ports=ports_str,
+            new_proxy_cmd=new_proxy_cmd,
+            proxy_file=proxy_file,
+        )
+        if success:
+            request.session.flash(
+                f'Pengaturan proxy untuk "{username}" berhasil disimpan: '
+                f'Port {ports_str}.',
+                'success',
+            )
+        else:
+            request.session.flash(
+                f'Gagal memperbarui pengaturan proxy untuk "{username}".',
+                'danger',
+            )
+    else:
+        request.session.flash('Pilihan mode port tidak valid.', 'danger')
 
     return HTTPFound(location=request.route_url('admin_users'))
 
@@ -599,6 +720,7 @@ def includeme(config):
     config.add_route(
         'admin_set_proxy',
         '/admin/users/{username:[a-z0-9_\\-\\.]+}/proxy')
+    config.add_route('admin_reverse_proxy_ports', '/admin/users/proxy-ports')
     config.add_route(
         'admin_revoke_user',
         '/admin/users/{username:[a-z0-9_\\-\\.]+}/revoke')

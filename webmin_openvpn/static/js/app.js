@@ -77,4 +77,107 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
 
+    // 5. Reverse Proxy Ports Modal & Input Restriction
+    const proxyPortsForm = document.getElementById('proxyPortsForm');
+    const portsInput = document.getElementById('reverseProxyPortsInput');
+    const radioAll = document.getElementById('proxyPortModeAll');
+    const radioCustom = document.getElementById('proxyPortModeCustom');
+    const customWrapper = document.getElementById('customPortsWrapper');
+    const portsFeedback = document.getElementById('portsErrorFeedback');
+
+    if (proxyPortsForm && portsInput && radioAll && radioCustom) {
+        // Enforce: User only types numbers and comma
+        portsInput.addEventListener('keypress', function(e) {
+            if (e.ctrlKey || e.metaKey || e.altKey) return;
+            if (!/[0-9,]/.test(e.key)) {
+                e.preventDefault();
+            }
+        });
+
+        portsInput.addEventListener('input', function() {
+            const cleaned = this.value.replace(/[^0-9,]/g, '');
+            if (this.value !== cleaned) {
+                this.value = cleaned;
+            }
+            if (portsInput.classList.contains('is-invalid')) {
+                portsInput.classList.remove('is-invalid');
+                if (portsFeedback) portsFeedback.style.display = 'none';
+            }
+        });
+
+        function updatePortModeState() {
+            if (radioCustom.checked) {
+                portsInput.disabled = false;
+                if (customWrapper) customWrapper.style.opacity = '1';
+            } else {
+                portsInput.disabled = true;
+                if (customWrapper) customWrapper.style.opacity = '0.5';
+                portsInput.classList.remove('is-invalid');
+                if (portsFeedback) portsFeedback.style.display = 'none';
+            }
+        }
+
+        radioAll.addEventListener('change', updatePortModeState);
+        radioCustom.addEventListener('change', function() {
+            updatePortModeState();
+            portsInput.focus();
+        });
+
+        // Clicking or focusing on input selects Option 2 automatically
+        portsInput.addEventListener('focus', function() {
+            if (!radioCustom.checked) {
+                radioCustom.checked = true;
+                updatePortModeState();
+            }
+        });
+
+        // Initialize state on load
+        updatePortModeState();
+
+        // Validate before submit
+        proxyPortsForm.addEventListener('submit', function(e) {
+            if (radioCustom.checked) {
+                const val = portsInput.value.trim();
+                if (!val) {
+                    e.preventDefault();
+                    portsInput.classList.add('is-invalid');
+                    if (portsFeedback) {
+                        portsFeedback.textContent = 'Harap masukkan nomor port (contoh: 6969,8081).';
+                        portsFeedback.style.display = 'block';
+                    }
+                    portsInput.focus();
+                    return false;
+                }
+
+                const portList = val.split(',').map(function(s) { return s.trim(); }).filter(function(s) { return s.length > 0; });
+                if (portList.length === 0) {
+                    e.preventDefault();
+                    portsInput.classList.add('is-invalid');
+                    if (portsFeedback) {
+                        portsFeedback.textContent = 'Harap masukkan minimal satu port yang valid.';
+                        portsFeedback.style.display = 'block';
+                    }
+                    portsInput.focus();
+                    return false;
+                }
+
+                for (let i = 0; i < portList.length; i++) {
+                    const portNum = parseInt(portList[i], 10);
+                    if (isNaN(portNum) || portNum < 1 || portNum > 65535) {
+                        e.preventDefault();
+                        portsInput.classList.add('is-invalid');
+                        if (portsFeedback) {
+                            portsFeedback.textContent = 'Nomor port harus berada antara 1 dan 65535: ' + portList[i];
+                            portsFeedback.style.display = 'block';
+                        }
+                        portsInput.focus();
+                        return false;
+                    }
+                }
+            }
+            // Ensure input is not disabled upon form submit so value is included
+            portsInput.disabled = false;
+        });
+    }
+
 });

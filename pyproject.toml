@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "webmin_openvpn"
-version = "1.2.0"
+version = "1.3.0"
 description = "OpenVPN Web Management with Pyramid and Ziggurat Foundations"
 readme = "README.rst"
 authors = [
