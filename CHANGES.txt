@@ -1,3 +1,11 @@
+2026-10-19
+----------
+- Tambah tombol Hapus
+- Tambah opsi no_more_proxy, default true. Bila true maka sekali proxy sudah
+  ditetapkan maka tidak bisa diubah.
+- Two-Factor Authentication (2FA) dengan aplikasi Google Authenticator untuk
+  login administrator.
+
 2026-10-18
 ----------
 - Akses proxy adalah pilihan

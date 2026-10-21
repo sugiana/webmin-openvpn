@@ -32,11 +32,29 @@ class User(UserMixin, Base):
     """
     __tablename__ = 'users'
 
+    totp_secret = sa.Column(sa.Unicode(64), nullable=True)
+
     def set_password(self, raw_password):
         UserService.set_password(self, raw_password)
 
     def check_password(self, raw_password):
         return UserService.check_password(self, raw_password)
+
+    @property
+    def has_2fa(self):
+        return bool(self.totp_secret)
+
+    def verify_totp(self, token):
+        """
+        Verify a 6-digit TOTP token against user's totp_secret.
+        Allows window=1 (30s margin).
+        """
+        if not self.totp_secret or not token:
+            return False
+        import pyotp
+        totp = pyotp.TOTP(self.totp_secret)
+        clean_token = str(token).strip().replace(" ", "")
+        return totp.verify(clean_token, valid_window=1)
 
     @property
     def is_admin(self):

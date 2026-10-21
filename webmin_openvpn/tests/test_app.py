@@ -2,6 +2,8 @@ import os
 import tempfile
 import shutil
 import unittest
+from unittest.mock import patch
+from datetime import datetime, timezone
 import webtest
 from pyramid.paster import get_appsettings
 from webmin_openvpn import main
@@ -10,6 +12,7 @@ from webmin_openvpn.models import (
     get_session_factory,
     User,
     UserService,
+    VPN,
     )
 
 
@@ -50,8 +53,16 @@ class TestWebminOpenVPN(unittest.TestCase):
     def setUp(self):
         self.testapp = webtest.TestApp(self.app)
         self.dbsession = self.session_factory()
+        admin = UserService.by_user_name('admin', db_session=self.dbsession)
+        if admin and admin.totp_secret:
+            admin.totp_secret = None
+            self.dbsession.commit()
 
     def tearDown(self):
+        admin = UserService.by_user_name('admin', db_session=self.dbsession)
+        if admin and admin.totp_secret:
+            admin.totp_secret = None
+            self.dbsession.commit()
         self.dbsession.close()
 
     def test_anonymous_redirect(self):
@@ -100,7 +111,8 @@ class TestWebminOpenVPN(unittest.TestCase):
         users_page = admin_app.get('/admin/users', status=200)
         self.assertIn('Data Klien OpenVPN', users_page.text)
         self.assertIn('sampleuser', users_page.text)
-        self.assertIn('sampleuser.tgz', users_page.text)
+        self.assertIn('<th>Waktu Pembuatan</th>', users_page.text)
+        self.assertNotIn('<th>Berkas Sertifikat (.tgz)</th>', users_page.text)
         self.assertIn('<th>IP</th>', users_page.text)
         self.assertNotIn('<th>Ukuran</th>', users_page.text)
         self.assertIn('10.8.41.99', users_page.text)
@@ -126,18 +138,26 @@ class TestWebminOpenVPN(unittest.TestCase):
         admin_app.post(
             '/login', {'username': 'admin', 'password': 'admin'}, status=302)
 
-        # 1. Click Proxy button for sampleuser
-        with patch('webmin_openvpn.views.admin.set_proxy_user') as mock_set:
-            mock_set.return_value = True
-            res = admin_app.get('/admin/users/sampleuser/proxy', status=302)
-            self.assertIn('/admin/users', res.location)
-            mock_set.assert_called_once()
-            self.assertEqual(mock_set.call_args[0][0], 'sampleuser')
+        # Allow proxy option for this test
+        orig_setting = self.app.registry.settings.get('openvpn.no_more_proxy')
+        self.app.registry.settings['openvpn.no_more_proxy'] = False
+        try:
+            # 1. Click Proxy button for sampleuser
+            with patch('webmin_openvpn.views.admin.set_proxy_user') \
+                    as mock_set:
+                mock_set.return_value = True
+                res = admin_app.get(
+                    '/admin/users/sampleuser/proxy', status=302)
+                self.assertIn('/admin/users', res.location)
+                mock_set.assert_called_once()
+                self.assertEqual(mock_set.call_args[0][0], 'sampleuser')
 
-        # Follow redirect and verify success message and button
-        followed = res.follow(status=200)
-        self.assertIn('berhasil diset sebagai proxy aktif', followed.text)
-        self.assertIn('Proxy', followed.text)
+            # Follow redirect and verify success message and button
+            followed = res.follow(status=200)
+            self.assertIn('berhasil diset sebagai proxy aktif', followed.text)
+            self.assertIn('Proxy', followed.text)
+        finally:
+            self.app.registry.settings['openvpn.no_more_proxy'] = orig_setting
 
     def test_load_ipp_map(self):
         """Test parsing OpenVPN ipp.txt file."""
@@ -168,7 +188,8 @@ class TestWebminOpenVPN(unittest.TestCase):
             'new_password': 'password123',
             'confirm_password': 'mismatchpassword',
         }, status=200)
-        self.assertIn('Konfirmasi password tidak cocok', fail_res.text)
+        self.assertIn(
+            'Konfirmasi password tidak cocok', fail_res.text)
 
     def test_create_cert_does_not_add_to_users_table(self):
         """
@@ -258,54 +279,61 @@ class TestWebminOpenVPN(unittest.TestCase):
         admin_app.post(
             '/login', {'username': 'admin', 'password': 'admin'}, status=302)
 
-        # 1. Page renders checkbox
-        page = admin_app.get('/admin/create-cert', status=200)
-        self.assertIn('Boleh akses proxy', page.text)
-        self.assertIn('name="proxy"', page.text)
+        orig_setting = self.app.registry.settings.get('openvpn.no_more_proxy')
+        self.app.registry.settings['openvpn.no_more_proxy'] = False
+        try:
+            # 1. Page renders checkbox
+            page = admin_app.get('/admin/create-cert', status=200)
+            self.assertIn('Boleh akses proxy', page.text)
+            self.assertIn('name="proxy"', page.text)
 
-        # 2. Submit with proxy checked
-        with patch('webmin_openvpn.views.admin.run_system_command') \
-             as mock_run, patch('webmin_openvpn.views.admin.set_proxy_user') \
-             as mock_set:
-            mock_run.return_value = (0, "Success")
-            admin_app.post('/admin/create-cert', {
-                'username': 'proxyclient',
-                'password': 'password123',
-                'proxy': '1',
-            }, status=200)
+            # 2. Submit with proxy checked
+            with patch('webmin_openvpn.views.admin.run_system_command') \
+                 as mock_run, \
+                 patch('webmin_openvpn.views.admin.set_proxy_user') \
+                 as mock_set:
+                mock_run.return_value = (0, "Success")
+                admin_app.post('/admin/create-cert', {
+                    'username': 'proxyclient',
+                    'password': 'password123',
+                    'proxy': '1',
+                }, status=200)
 
-            mock_run.assert_called_once()
-            cmd_args = mock_run.call_args[0][0]
-            self.assertEqual(cmd_args[1], 'proxyclient')
-            self.assertIn('proxy', cmd_args)
-            self.assertEqual(
-                cmd_args, [
-                    '/usr/local/bin/build-client-cert', 'proxyclient', 'proxy',
-                    'login', 'adduser', 'pass=password123'])
-            # Verify set_proxy_user called with proxyclient
-            mock_set.assert_called_once()
-            self.assertEqual(mock_set.call_args[0][0], 'proxyclient')
+                mock_run.assert_called_once()
+                cmd_args = mock_run.call_args[0][0]
+                self.assertEqual(cmd_args[1], 'proxyclient')
+                self.assertIn('proxy', cmd_args)
+                self.assertEqual(
+                    cmd_args, [
+                        '/usr/local/bin/build-client-cert', 'proxyclient',
+                        'proxy', 'login', 'adduser', 'pass=password123'])
+                # Verify set_proxy_user called with proxyclient
+                mock_set.assert_called_once()
+                self.assertEqual(mock_set.call_args[0][0], 'proxyclient')
 
-        # 3. Submit without proxy checked
-        with patch('webmin_openvpn.views.admin.run_system_command') \
-             as mock_run, patch('webmin_openvpn.views.admin.set_proxy_user') \
-             as mock_set:
-            mock_run.return_value = (0, "Success")
-            admin_app.post('/admin/create-cert', {
-                'username': 'noproxyclient',
-                'password': 'password123',
-            }, status=200)
+            # 3. Submit without proxy checked
+            with patch('webmin_openvpn.views.admin.run_system_command') \
+                 as mock_run, \
+                 patch('webmin_openvpn.views.admin.set_proxy_user') \
+                 as mock_set:
+                mock_run.return_value = (0, "Success")
+                admin_app.post('/admin/create-cert', {
+                    'username': 'noproxyclient',
+                    'password': 'password123',
+                }, status=200)
 
-            mock_run.assert_called_once()
-            cmd_args = mock_run.call_args[0][0]
-            self.assertEqual(cmd_args[1], 'noproxyclient')
-            self.assertNotIn('proxy', cmd_args)
-            self.assertEqual(
-                cmd_args, [
-                    '/usr/local/bin/build-client-cert', 'noproxyclient',
-                    'login', 'adduser', 'pass=password123'])
-            # Verify set_proxy_user was NOT called
-            mock_set.assert_not_called()
+                mock_run.assert_called_once()
+                cmd_args = mock_run.call_args[0][0]
+                self.assertEqual(cmd_args[1], 'noproxyclient')
+                self.assertNotIn('proxy', cmd_args)
+                self.assertEqual(
+                    cmd_args, [
+                        '/usr/local/bin/build-client-cert', 'noproxyclient',
+                        'login', 'adduser', 'pass=password123'])
+                # Verify set_proxy_user was NOT called
+                mock_set.assert_not_called()
+        finally:
+            self.app.registry.settings['openvpn.no_more_proxy'] = orig_setting
 
     def test_proxy_user_helpers(self):
         """Test get_proxy_user and set_proxy_user helper functions."""
@@ -413,3 +441,419 @@ class TestWebminOpenVPN(unittest.TestCase):
             fresh_db.commit()
         finally:
             fresh_db.close()
+
+    def test_admin_users_has_hapus_button(self):
+        """Daftar Pengguna table must have 'Hapus' button next to 'Ubah
+        Password'."""
+        admin_app = webtest.TestApp(self.app)
+        admin_app.post(
+            '/login', {'username': 'admin', 'password': 'admin'}, status=302)
+
+        res = admin_app.get('/admin/users', status=200)
+        self.assertIn('Ubah Password', res.text)
+        self.assertIn('Hapus', res.text)
+        self.assertIn('/admin/users/sampleuser/revoke', res.text)
+
+    def test_admin_revoke_user_get_and_post_validation(self):
+        """Test GET and validation failure for revoke confirmation form."""
+        admin_app = webtest.TestApp(self.app)
+        admin_app.post(
+            '/login', {'username': 'admin', 'password': 'admin'}, status=302)
+
+        # 1. GET revoke confirmation page
+        get_res = admin_app.get('/admin/users/sampleuser/revoke', status=200)
+        self.assertIn('Konfirmasi Hapus User', get_res.text)
+        self.assertIn('Silakan hapus sampleuser', get_res.text)
+        self.assertIn('Lanjut', get_res.text)
+        self.assertIn('Tidak jadi', get_res.text)
+
+        # 2. POST with wrong confirmation text
+        fail_res = admin_app.post('/admin/users/sampleuser/revoke', {
+            'confirm_text': 'hapus saja',
+        }, status=200)
+        self.assertIn('Kalimat konfirmasi belum sesuai', fail_res.text)
+        self.assertIn('Silakan hapus sampleuser', fail_res.text)
+
+        # 3. POST with cancel action
+        cancel_res = admin_app.post('/admin/users/sampleuser/revoke', {
+            'action': 'cancel',
+        }, status=302)
+        self.assertIn('/admin/users', cancel_res.location)
+
+    def test_admin_revoke_user_post_success(self):
+        """Test successful execution of revoke user command and tgz removal."""
+        admin_app = webtest.TestApp(self.app)
+        admin_app.post(
+            '/login', {'username': 'admin', 'password': 'admin'}, status=302)
+
+        with patch('webmin_openvpn.views.admin.revoke_user') as mock_revoke:
+            mock_revoke.return_value = (True, 'Revoked successfully')
+            res = admin_app.post('/admin/users/sampleuser/revoke', {
+                'confirm_text': 'Silakan hapus sampleuser',
+            }, status=302)
+            self.assertIn('/admin/users', res.location)
+            mock_revoke.assert_called_once()
+            self.assertEqual(mock_revoke.call_args[0][0], 'sampleuser')
+
+        followed = res.follow(status=200)
+        self.assertIn('User "sampleuser" berhasil dihapus.', followed.text)
+
+    def test_revoke_user_utils(self):
+        """Test revoke_user utility function executing command and deleting
+        tgz."""
+        from webmin_openvpn.utils import revoke_user
+
+        with patch('webmin_openvpn.utils.run_system_command') as mock_run, \
+             patch('os.path.exists') as mock_exists, \
+             patch('os.remove') as mock_remove:
+            mock_run.return_value = (0, 'OK')
+            mock_exists.return_value = True
+
+            success, out = revoke_user(
+                'testclient99', revoke_cmd='/usr/local/bin/revoke-user',
+                client_dir='/tmp')
+            self.assertTrue(success)
+            mock_run.assert_called_once_with([
+                '/usr/local/bin/revoke-user', 'testclient99'])
+            mock_remove.assert_called_once_with('/tmp/testclient99.tgz')
+
+    def test_is_no_more_proxy_utils(self):
+        """Test is_no_more_proxy helper for various settings values."""
+        from webmin_openvpn.utils import is_no_more_proxy, is_proxy_file_exists
+
+        # Default is True if not set
+        self.assertTrue(is_no_more_proxy({}))
+        # Explicit true strings
+        self.assertTrue(is_no_more_proxy({'openvpn.no_more_proxy': 'true'}))
+        self.assertTrue(is_no_more_proxy({'openvpn.no_more_proxy': 'True'}))
+        self.assertTrue(is_no_more_proxy({'openvpn.no_more_proxy': '1'}))
+        self.assertTrue(is_no_more_proxy({'openvpn.no_more_proxy': 'yes'}))
+        self.assertTrue(is_no_more_proxy({'openvpn.no_more_proxy': True}))
+        # Explicit false strings
+        self.assertFalse(is_no_more_proxy({'openvpn.no_more_proxy': 'false'}))
+        self.assertFalse(is_no_more_proxy({'openvpn.no_more_proxy': 'False'}))
+        self.assertFalse(is_no_more_proxy({'openvpn.no_more_proxy': '0'}))
+        self.assertFalse(is_no_more_proxy({'openvpn.no_more_proxy': 'no'}))
+        self.assertFalse(is_no_more_proxy({'openvpn.no_more_proxy': False}))
+
+        # Test is_proxy_file_exists
+        self.assertTrue(is_proxy_file_exists(self.test_proxy_file))
+        self.assertFalse(is_proxy_file_exists('/path/to/nonexistent/file.txt'))
+
+    def test_no_more_proxy_true_with_proxy_file(self):
+        """When proxy.txt exists and openvpn.no_more_proxy=true:
+        - Proxy option in create-cert form is hidden.
+        - Proxy button in users list is hidden.
+        - Proxy badge is displayed next to proxy user's username.
+        - Direct call to /admin/users/{u}/proxy is blocked.
+        """
+        admin_app = webtest.TestApp(self.app)
+        admin_app.post(
+            '/login', {'username': 'admin', 'password': 'admin'}, status=302)
+
+        orig_setting = self.app.registry.settings.get('openvpn.no_more_proxy')
+        self.app.registry.settings['openvpn.no_more_proxy'] = 'true'
+        try:
+            # 1. create-cert page: checkbox proxy is hidden
+            cert_page = admin_app.get('/admin/create-cert', status=200)
+            self.assertNotIn('Boleh akses proxy', cert_page.text)
+            self.assertNotIn('name="proxy"', cert_page.text)
+
+            # 2. users page: Proxy button in action column is hidden
+            users_page = admin_app.get('/admin/users', status=200)
+            self.assertNotIn('/admin/users/sampleuser/proxy', users_page.text)
+            # Proxy badge next to username is present for proxy user
+            # (sampleuser)
+            self.assertIn('border-warning-subtle', users_page.text)
+            self.assertIn('bi-shield-shaded me-1"></i>Proxy', users_page.text)
+            self.assertIn('sampleuser', users_page.text)
+
+            # 3. Direct access to set proxy route is blocked
+            set_res = admin_app.get(
+                '/admin/users/sampleuser/proxy', status=302)
+            self.assertIn('/admin/users', set_res.location)
+            followed = set_res.follow(status=200)
+            self.assertIn('Opsi proxy dinonaktifkan', followed.text)
+        finally:
+            self.app.registry.settings['openvpn.no_more_proxy'] = orig_setting
+
+    def test_no_more_proxy_false_with_proxy_file(self):
+        """When proxy.txt exists and openvpn.no_more_proxy=false:
+        - Proxy option in create-cert form is visible.
+        - Proxy button in users list is visible.
+        - Badge next to username is not displayed (represented by button).
+        """
+        admin_app = webtest.TestApp(self.app)
+        admin_app.post(
+            '/login', {'username': 'admin', 'password': 'admin'}, status=302)
+
+        orig_setting = self.app.registry.settings.get('openvpn.no_more_proxy')
+        self.app.registry.settings['openvpn.no_more_proxy'] = 'false'
+        try:
+            # 1. create-cert page: checkbox proxy is visible
+            cert_page = admin_app.get('/admin/create-cert', status=200)
+            self.assertIn('Boleh akses proxy', cert_page.text)
+            self.assertIn('name="proxy"', cert_page.text)
+
+            # 2. users page: Proxy button in action column is visible
+            users_page = admin_app.get('/admin/users', status=200)
+            self.assertIn('/admin/users/sampleuser/proxy', users_page.text)
+            self.assertNotIn('border-warning-subtle', users_page.text)
+        finally:
+            self.app.registry.settings['openvpn.no_more_proxy'] = orig_setting
+
+    def test_proxy_option_visible_when_proxy_file_missing(self):
+        """When proxy.txt does not exist (even if no_more_proxy=true):
+        - Proxy option in create-cert form is visible.
+        - Proxy button in users list is visible.
+        """
+        admin_app = webtest.TestApp(self.app)
+        admin_app.post(
+            '/login', {'username': 'admin', 'password': 'admin'}, status=302)
+
+        orig_proxy = self.app.registry.settings.get('openvpn.proxy_file')
+        orig_setting = self.app.registry.settings.get('openvpn.no_more_proxy')
+        self.app.registry.settings['openvpn.proxy_file'] = \
+            '/tmp/nonexistent_proxy_file_xyz.txt'
+        self.app.registry.settings['openvpn.no_more_proxy'] = 'true'
+        try:
+            # 1. create-cert page: checkbox proxy is visible
+            cert_page = admin_app.get('/admin/create-cert', status=200)
+            self.assertIn('Boleh akses proxy', cert_page.text)
+            self.assertIn('name="proxy"', cert_page.text)
+
+            # 2. users page: Proxy button in action column is visible
+            users_page = admin_app.get('/admin/users', status=200)
+            self.assertIn('/admin/users/sampleuser/proxy', users_page.text)
+        finally:
+            self.app.registry.settings['openvpn.proxy_file'] = orig_proxy
+            self.app.registry.settings['openvpn.no_more_proxy'] = orig_setting
+
+    def test_2fa_utils(self):
+        """Test 2FA TOTP helper functions."""
+        from webmin_openvpn.utils import (
+            generate_totp_secret,
+            generate_totp_uri,
+            generate_totp_qr_svg_base64,
+            format_totp_secret,
+        )
+
+        secret = generate_totp_secret()
+        self.assertIsInstance(secret, str)
+        self.assertEqual(len(secret), 32)
+
+        uri = generate_totp_uri(secret, 'admin', issuer='WebminOpenVPN')
+        self.assertTrue(uri.startswith(
+            'otpauth://totp/WebminOpenVPN:admin?secret='))
+        self.assertIn('issuer=WebminOpenVPN', uri)
+
+        svg_data = generate_totp_qr_svg_base64(secret, 'admin')
+        self.assertTrue(svg_data.startswith('data:image/svg+xml;base64,'))
+
+        formatted = format_totp_secret('JBSWY3DPEHPK3PXP')
+        self.assertEqual(formatted, 'JBSW Y3DP EHPK 3PXP')
+
+    def test_admin_2fa_settings_and_activation(self):
+        """Test Admin 2FA settings page, enabling 2FA with TOTP, and disabling
+        it."""
+        import pyotp
+        admin_app = webtest.TestApp(self.app)
+        admin_app.post(
+            '/login', {'username': 'admin', 'password': 'admin'}, status=302)
+
+        # 1. GET 2FA settings page when not yet enabled
+        get_res = admin_app.get('/admin/2fa', status=200)
+        self.assertIn('Aktivasi Google Authenticator', get_res.text)
+        self.assertIn('data:image/svg+xml;base64,', get_res.text)
+        # Retrieve pending secret from manualKeyInput
+        import re
+        match = re.search(
+            r'id="manualKeyInput"\s+value="([A-Z0-9]+)"', get_res.text)
+        self.assertIsNotNone(match)
+        pending_secret = match.group(1)
+
+        # 2. Try enabling with invalid token
+        fail_res = admin_app.post('/admin/2fa', {
+            'action': 'enable',
+            'token': '000000',
+        }, status=200)
+        self.assertIn(
+            'Kode verifikasi tidak valid atau kedaluwarsa', fail_res.text)
+
+        # 3. Enable with valid TOTP token
+        totp = pyotp.TOTP(pending_secret)
+        valid_token = totp.now()
+        success_res = admin_app.post('/admin/2fa', {
+            'action': 'enable',
+            'token': valid_token,
+        }, status=302)
+        self.assertIn('/admin/2fa', success_res.location)
+
+        followed = success_res.follow(status=200)
+        self.assertIn('berhasil diaktifkan', followed.text)
+        self.assertIn('2FA Sedang Aktif', followed.text)
+
+        # Verify DB user has totp_secret
+        fresh_db = self.session_factory()
+        try:
+            admin_u = UserService.by_user_name('admin', db_session=fresh_db)
+            self.assertTrue(admin_u.has_2fa)
+            self.assertEqual(admin_u.totp_secret, pending_secret)
+        finally:
+            fresh_db.close()
+
+        # 4. Try disabling with wrong password
+        fail_dis = admin_app.post('/admin/2fa', {
+            'action': 'disable',
+            'password': 'wrongpassword',
+        }, status=200)
+        self.assertIn('Kata sandi yang Anda masukkan salah', fail_dis.text)
+
+        # 5. Disable with correct password
+        ok_dis = admin_app.post('/admin/2fa', {
+            'action': 'disable',
+            'password': 'admin',
+        }, status=302)
+        self.assertIn('/admin/2fa', ok_dis.location)
+
+        followed_dis = ok_dis.follow(status=200)
+        self.assertIn(
+            'Two-Factor Authentication berhasil dinonaktifkan',
+            followed_dis.text)
+        self.assertIn('Aktivasi Google Authenticator', followed_dis.text)
+
+        fresh_db2 = self.session_factory()
+        try:
+            admin_u2 = UserService.by_user_name('admin', db_session=fresh_db2)
+            self.assertFalse(admin_u2.has_2fa)
+            self.assertIsNone(admin_u2.totp_secret)
+        finally:
+            fresh_db2.close()
+
+    def test_login_flow_with_and_without_2fa(self):
+        """Test login flow transitions between standard 1-step and 2-step
+        TOTP."""
+        import pyotp
+        app = webtest.TestApp(self.app)
+
+        # 1. Login without 2FA -> direct login (302 -> /admin)
+        res1 = app.post(
+            '/login', {'username': 'admin', 'password': 'admin'}, status=302)
+        self.assertIn('/admin', res1.location)
+        app.get('/logout', status=302)
+
+        # 2. Activate 2FA on admin user
+        secret = pyotp.random_base32()
+        fresh_db = self.session_factory()
+        try:
+            admin_u = UserService.by_user_name('admin', db_session=fresh_db)
+            admin_u.totp_secret = secret
+            fresh_db.commit()
+        finally:
+            fresh_db.close()
+
+        try:
+            # 3. Step 1: POST /login with username & password
+            res_step1 = app.post(
+                '/login', {'username': 'admin', 'password': 'admin'},
+                status=302)
+            # Should redirect to /login/2fa, NOT /admin
+            self.assertIn('/login/2fa', res_step1.location)
+
+            # 4. GET /login/2fa displays verification page
+            page_2fa = app.get('/login/2fa', status=200)
+            self.assertIn('Verifikasi 2FA', page_2fa.text)
+            self.assertIn('Google Authenticator', page_2fa.text)
+            self.assertIn('name="token"', page_2fa.text)
+
+            # 5. POST /login/2fa with invalid token
+            fail_2fa = app.post('/login/2fa', {'token': '123123'}, status=200)
+            self.assertIn(
+                'Kode verifikasi tidak valid atau telah kedaluwarsa',
+                fail_2fa.text)
+
+            # 6. POST /login/2fa with action=cancel redirects back to /login
+            cancel_2fa = app.post(
+                '/login/2fa', {'action': 'cancel'}, status=302)
+            self.assertIn('/login', cancel_2fa.location)
+
+            # Repeat step 1
+            app.post(
+                '/login', {'username': 'admin', 'password': 'admin'},
+                status=302)
+
+            # 7. POST /login/2fa with valid TOTP code
+            valid_code = pyotp.TOTP(secret).now()
+            res_step2 = app.post(
+                '/login/2fa', {'token': valid_code}, status=302)
+            self.assertIn('/admin', res_step2.location)
+
+            # Now authenticated, accessing dashboard succeeds
+            dash = res_step2.follow(status=200)
+            self.assertIn('SYSTEM MONITOR', dash.text)
+
+        finally:
+            # Clean up: remove 2FA secret from DB
+            clean_db = self.session_factory()
+            try:
+                admin_clean = UserService.by_user_name(
+                    'admin', db_session=clean_db)
+                admin_clean.totp_secret = None
+                clean_db.commit()
+            finally:
+                clean_db.close()
+
+    def test_admin_users_status_column(self):
+        """Test status column (ON / OFF + time + red background for OFF) in
+        admin users list."""
+        self.testapp.post(
+            '/login', {'username': 'admin', 'password': 'admin'}, status=302)
+
+        expected_time_on = None
+        db = self.session_factory()
+        try:
+            vpn = db.query(VPN).filter_by(nama='sampleuser').first()
+            if not vpn:
+                vpn = VPN(nama='sampleuser', ip='10.8.41.99')
+                db.add(vpn)
+            else:
+                vpn.ip = '10.8.41.99'
+            vpn.terhubung = True
+            vpn.perubahan = datetime(2026, 10, 19, 14, 30, 0)
+            db.commit()
+            db.refresh(vpn)
+            expected_time_on = vpn.perubahan.strftime('%d/%m/%Y %H:%M:%S')
+        finally:
+            db.close()
+
+        res_on = self.testapp.get('/admin/users', status=200)
+        self.assertIn('<th>Status</th>', res_on.text)
+        self.assertIn('>ON</span>', res_on.text)
+        self.assertIn(expected_time_on, res_on.text)
+
+        # 2. When disconnected (OFF with red background)
+        expected_time_off = None
+        db = self.session_factory()
+        try:
+            vpn = db.query(VPN).filter_by(nama='sampleuser').first()
+            vpn.terhubung = False
+            vpn.perubahan = datetime(2026, 10, 19, 15, 45, 12)
+            db.commit()
+            db.refresh(vpn)
+            expected_time_off = vpn.perubahan.strftime('%d/%m/%Y %H:%M:%S')
+        finally:
+            db.close()
+
+        res_off = self.testapp.get('/admin/users', status=200)
+        self.assertIn('badge bg-danger', res_off.text)
+        self.assertIn(f'OFF {expected_time_off}', res_off.text)
+
+        # 3. Clean up sampleuser VPN record
+        db = self.session_factory()
+        try:
+            vpn = db.query(VPN).filter_by(nama='sampleuser').first()
+            if vpn:
+                db.delete(vpn)
+                db.commit()
+        finally:
+            db.close()

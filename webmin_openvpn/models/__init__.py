@@ -16,6 +16,7 @@ from .auth import (
     UserService,
     GroupService,
 )
+from .network import VPN
 
 
 def get_engine(settings, prefix='sqlalchemy.'):

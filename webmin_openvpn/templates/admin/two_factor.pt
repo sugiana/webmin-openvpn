@@ -1,0 +1,214 @@
+<html metal:use-macro="load: webmin_openvpn:templates/layout.pt">
+<head>
+    <title metal:fill-slot="title">Two-Factor Authentication (2FA) - Admin</title>
+</head>
+<body>
+    <div metal:fill-slot="content">
+        <!-- Page Header -->
+        <div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-3 mb-4 pb-2 border-bottom">
+            <div>
+                <h2 class="fw-bold text-dark mb-1">
+                    <i class="bi bi-shield-check text-primary me-2"></i>Two-Factor Authentication (2FA)
+                </h2>
+                <p class="text-muted mb-0">Tingkatkan keamanan login administrator menggunakan aplikasi <strong>Google Authenticator</strong> di Android.</p>
+            </div>
+            <div class="d-flex gap-2">
+                <a href="${request.route_url('admin_dashboard')}" class="btn btn-outline-secondary rounded-3">
+                    <i class="bi bi-arrow-left me-1"></i> Dashboard
+                </a>
+            </div>
+        </div>
+
+        <div class="row g-4 justify-content-center">
+            
+            <!-- JIKA 2FA SUDAH AKTIF -->
+            <div class="col-12 col-lg-8" tal:condition="user.has_2fa">
+                <div class="card shadow-sm border-0 rounded-4 overflow-hidden mb-4">
+                    <div class="card-header bg-success-subtle border-0 py-3 px-4 d-flex justify-content-between align-items-center">
+                        <div class="d-flex align-items-center gap-2">
+                            <i class="bi bi-shield-fill-check fs-4 text-success"></i>
+                            <h5 class="fw-bold mb-0 text-success-emphasis">2FA Sedang Aktif</h5>
+                        </div>
+                        <span class="badge bg-success text-white px-3 py-2 rounded-pill">Aktif &amp; Terlindungi</span>
+                    </div>
+                    <div class="card-body p-4 p-md-5">
+                        <div class="d-flex align-items-start gap-4">
+                            <div class="bg-success text-white rounded-circle p-3 d-none d-sm-flex align-items-center justify-content-center shadow-sm" style="width: 60px; height: 60px;">
+                                <i class="bi bi-google fs-3"></i>
+                            </div>
+                            <div class="flex-grow-1">
+                                <h5 class="fw-bold text-dark mb-2">Akun Anda dilindungi dengan Google Authenticator</h5>
+                                <p class="text-secondary mb-3">
+                                    Setiap kali Anda masuk ke portal Webmin OpenVPN, Anda akan diminta memasukkan kata sandi dan kode 6 digit dari aplikasi Google Authenticator di perangkat Android Anda.
+                                </p>
+                                <div class="p-3 bg-light rounded-3 border mb-4">
+                                    <div class="small text-muted mb-1"><i class="bi bi-info-circle me-1"></i> Informasi Tambahan:</div>
+                                    <ul class="mb-0 small text-secondary ps-3">
+                                        <li>Pastikan jam pada perangkat Android Anda selalu ter-sinkronisasi otomatis via jaringan.</li>
+                                        <li>Jika Anda berganti ponsel, nonaktifkan 2FA terlebih dahulu lalu aktifkan kembali di perangkat baru.</li>
+                                    </ul>
+                                </div>
+
+                                <hr class="my-4">
+
+                                <h6 class="fw-bold text-danger mb-2">
+                                    <i class="bi bi-exclamation-triangle-fill me-1"></i> Nonaktifkan 2FA
+                                </h6>
+                                <p class="text-muted small mb-3">
+                                    Jika Anda ingin menonaktifkan autentikasi dua faktor, masukkan password akun admin Anda saat ini untuk konfirmasi.
+                                </p>
+
+                                <form method="POST" action="${request.route_url('admin_2fa')}">
+                                    <input type="hidden" name="action" value="disable" />
+                                    
+                                    <div class="mb-3" style="max-width: 400px;">
+                                        <label for="password" class="form-label fw-semibold small text-secondary">PASSWORD SAAT INI</label>
+                                        <input 
+                                            type="password" 
+                                            class="form-control" 
+                                            id="password" 
+                                            name="password" 
+                                            placeholder="Masukkan password admin" 
+                                            required 
+                                        />
+                                    </div>
+                                    
+                                    <button type="submit" class="btn btn-outline-danger rounded-3 fw-semibold" onclick="return confirm('Apakah Anda yakin ingin menonaktifkan Two-Factor Authentication?');">
+                                        <i class="bi bi-shield-x me-1"></i> Nonaktifkan 2FA Sekarang
+                                    </button>
+                                </form>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- JIKA 2FA BELUM AKTIF (SETUP WIZARD) -->
+            <div class="col-12 col-lg-9" tal:condition="not user.has_2fa">
+                <div class="card shadow-sm border-0 rounded-4 overflow-hidden">
+                    <div class="card-header bg-white border-0 pt-4 px-4 pb-2">
+                        <div class="d-flex align-items-center gap-2">
+                            <span class="badge bg-primary-subtle text-primary p-2 rounded-3">
+                                <i class="bi bi-google fs-5"></i>
+                            </span>
+                            <div>
+                                <h5 class="fw-bold mb-0 text-dark">Aktivasi Google Authenticator</h5>
+                                <p class="text-muted small mb-0">Ikuti 3 langkah mudah berikut untuk menghubungkan akun Anda.</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="card-body p-4 p-md-5">
+                        
+                        <!-- Step 1 -->
+                        <div class="d-flex gap-3 mb-4">
+                            <div class="step-badge bg-primary text-white rounded-circle d-flex align-items-center justify-content-center fw-bold shadow-sm flex-shrink-0" style="width: 36px; height: 36px;">
+                                1
+                            </div>
+                            <div>
+                                <h6 class="fw-bold text-dark mb-1">Pasang Aplikasi di HP Android</h6>
+                                <p class="text-muted small mb-0">
+                                    Buka <strong>Google Play Store</strong> di perangkat Android Anda, cari dan pasang aplikasi 
+                                    <a href="https://play.google.com/store/apps/details?id=com.google.android.apps.authenticator2" target="_blank" class="fw-bold text-decoration-none text-primary">
+                                        Google Authenticator <i class="bi bi-box-arrow-up-right small"></i>
+                                    </a>.
+                                </p>
+                            </div>
+                        </div>
+
+                        <!-- Step 2 -->
+                        <div class="d-flex gap-3 mb-4">
+                            <div class="step-badge bg-primary text-white rounded-circle d-flex align-items-center justify-content-center fw-bold shadow-sm flex-shrink-0" style="width: 36px; height: 36px;">
+                                2
+                            </div>
+                            <div class="flex-grow-1">
+                                <h6 class="fw-bold text-dark mb-1">Pindai (Scan) QR Code</h6>
+                                <p class="text-muted small mb-3">
+                                    Buka aplikasi Google Authenticator, ketuk tombol <strong>+</strong> lalu pilih <strong>Pindai kode QR</strong> (atau Scan QR Code).
+                                </p>
+
+                                <div class="row align-items-center g-4 bg-light p-3 p-md-4 rounded-4 border mb-3">
+                                    <div class="col-12 col-sm-auto text-center">
+                                        <div class="p-2 bg-white rounded-3 shadow-sm d-inline-block border">
+                                            <img src="${qr_svg}" alt="QR Code 2FA" style="width: 180px; height: 180px;" class="img-fluid d-block" />
+                                        </div>
+                                    </div>
+                                    <div class="col-12 col-sm">
+                                        <label class="form-label fw-bold text-secondary small mb-1">ATAU MASUKKAN KUNCI PENYIAPAN (SETUP KEY):</label>
+                                        <div class="input-group mb-2">
+                                            <input 
+                                                type="text" 
+                                                class="form-control font-monospace bg-white fw-bold text-primary" 
+                                                id="manualKeyInput" 
+                                                value="${secret}" 
+                                                readonly 
+                                            />
+                                            <button class="btn btn-outline-secondary" type="button" id="copyKeyBtn" onclick="navigator.clipboard.writeText(document.getElementById('manualKeyInput').value); this.innerHTML='<i class=\'bi bi-check-lg\'></i> Disalin!'; setTimeout(() => this.innerHTML='<i class=\'bi bi-clipboard\'></i> Salin', 2000);">
+                                                <i class="bi bi-clipboard"></i> Salin
+                                            </button>
+                                        </div>
+                                        <div class="small text-muted">
+                                            Tipe Kunci: <strong>Berdasarkan waktu (Time-based)</strong><br />
+                                            Nama Akun: <strong>WebminOpenVPN (${user.user_name})</strong>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Step 3 -->
+                        <div class="d-flex gap-3 mb-2">
+                            <div class="step-badge bg-primary text-white rounded-circle d-flex align-items-center justify-content-center fw-bold shadow-sm flex-shrink-0" style="width: 36px; height: 36px;">
+                                3
+                            </div>
+                            <div class="flex-grow-1">
+                                <h6 class="fw-bold text-dark mb-1">Masukkan Kode Verifikasi 6 Angka</h6>
+                                <p class="text-muted small mb-3">
+                                    Ketikkan 6 digit angka yang muncul di aplikasi Google Authenticator untuk menguji dan mengaktifkan 2FA.
+                                </p>
+
+                                <form method="POST" action="${request.route_url('admin_2fa')}" id="formEnable2FA">
+                                    <input type="hidden" name="action" value="enable" />
+                                    
+                                    <div class="row g-2 align-items-center" style="max-width: 480px;">
+                                        <div class="col-12 col-sm-6">
+                                            <div class="input-group">
+                                                <span class="input-group-text bg-light border-end-0 text-muted">
+                                                    <i class="bi bi-key-fill"></i>
+                                                </span>
+                                                <input 
+                                                    type="text" 
+                                                    class="form-control font-monospace fw-bold fs-5 text-center bg-light border-start-0 py-2" 
+                                                    id="token" 
+                                                    name="token" 
+                                                    placeholder="000000" 
+                                                    maxlength="6" 
+                                                    pattern="[0-9]{6}" 
+                                                    inputmode="numeric" 
+                                                    required 
+                                                    autofocus 
+                                                    style="letter-spacing: 0.2rem;"
+                                                />
+                                            </div>
+                                        </div>
+                                        <div class="col-12 col-sm-6">
+                                            <button type="submit" class="btn btn-primary w-100 py-2 rounded-3 fw-bold shadow-sm d-flex align-items-center justify-content-center gap-2">
+                                                <i class="bi bi-shield-check fs-5"></i>
+                                                <span>Aktifkan 2FA</span>
+                                            </button>
+                                        </div>
+                                    </div>
+                                    <div class="form-text small mt-2">Kode berubah secara otomatis setiap 30 detik.</div>
+                                </form>
+                            </div>
+                        </div>
+
+                    </div>
+                </div>
+            </div>
+
+        </div>
+
+    </div>
+</body>
+</html>

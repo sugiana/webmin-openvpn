@@ -1,0 +1,78 @@
+<html metal:use-macro="load: webmin_openvpn:templates/layout.pt">
+<head>
+    <title metal:fill-slot="title">Konfirmasi Hapus User - Admin OpenVPN</title>
+</head>
+<body>
+    <div metal:fill-slot="content">
+        <div class="row justify-content-center">
+            <div class="col-12 col-md-8 col-lg-6">
+                
+                <div class="card shadow-sm border-0 rounded-4 overflow-hidden">
+                    <div class="card-header bg-white border-0 pt-4 px-4 pb-2">
+                        <div class="d-flex align-items-center gap-3">
+                            <span class="bg-danger-subtle text-danger rounded-3 p-3 d-inline-flex align-items-center justify-content-center">
+                                <i class="bi bi-exclamation-triangle-fill fs-3"></i>
+                            </span>
+                            <div>
+                                <h4 class="fw-bold mb-1 text-danger">Konfirmasi Hapus User</h4>
+                                <p class="text-muted small mb-0">Hapus user: <strong class="text-dark">${target_username}</strong></p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="card-body p-4">
+                        <div class="alert alert-danger border-0 rounded-3 small mb-4">
+                            <div class="d-flex gap-2">
+                                <i class="bi bi-exclamation-circle-fill fs-5 flex-shrink-0"></i>
+                                <div>
+                                    Tindakan ini akan mencabut (revoke) sertifikat OpenVPN untuk user <strong>${target_username}</strong> dan menghapus berkas sertifikatnya.
+                                </div>
+                            </div>
+                        </div>
+
+                        <form method="POST" action="${request.route_url('admin_revoke_user', username=target_username)}">
+                            
+                            <div class="mb-4">
+                                <label for="confirm_text" class="form-label fw-semibold text-secondary small">
+                                    KONFIRMASI PENGHAPUSAN
+                                </label>
+                                <p class="small text-muted mb-2">
+                                    Ketik <code class="fw-bold text-danger user-select-all">${expected_text}</code> untuk melanjutkan:
+                                </p>
+                                <div class="input-group">
+                                    <span class="input-group-text bg-light border-end-0 rounded-start-3 text-muted">
+                                        <i class="bi bi-shield-exclamation"></i>
+                                    </span>
+                                    <input 
+                                        type="text" 
+                                        class="form-control bg-light border-start-0 py-2" 
+                                        id="confirm_text" 
+                                        name="confirm_text" 
+                                        placeholder="${expected_text}" 
+                                        autocomplete="off" 
+                                        required 
+                                        autofocus 
+                                        value="${user_input or ''}"
+                                    />
+                                </div>
+                            </div>
+
+                            <div class="d-flex justify-content-between align-items-center pt-2">
+                                <a href="${request.route_url('admin_users')}" class="btn btn-light rounded-3 px-4">
+                                    Tidak jadi
+                                </a>
+                                <button type="submit" name="action" value="proceed" class="btn btn-danger rounded-3 px-4 fw-bold shadow-sm d-flex align-items-center gap-2">
+                                    <i class="bi bi-trash-fill"></i>
+                                    <span>Lanjut</span>
+                                </button>
+                            </div>
+
+                        </form>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+    </div>
+</body>
+</html>

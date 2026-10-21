@@ -28,7 +28,7 @@
                     <span class="input-group-text bg-light border-end-0 rounded-start-3 text-muted">
                         <i class="bi bi-search"></i>
                     </span>
-                    <input type="text" class="form-control bg-light border-start-0 rounded-end-3" id="tableSearch" placeholder="Cari username atau IP..." />
+                    <input type="text" class="form-control bg-light border-start-0 rounded-end-3" id="tableSearch" placeholder="Cari username, IP, status..." />
                 </div>
             </div>
 
@@ -40,9 +40,9 @@
                                 <th style="width: 50px;">#</th>
                                 <th>Username</th>
                                 <th>IP</th>
-                                <th>Berkas Sertifikat (.tgz)</th>
-                                <th>Waktu Pembuatan / Modifikasi</th>
-                                <th class="text-end" style="width: 330px;">Aksi</th>
+                                <th>Status</th>
+                                <th>Waktu Pembuatan</th>
+                                <th class="text-end" style="width: ${'330px' if show_proxy_option else '260px'};">Aksi</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -53,8 +53,11 @@
                                         <div class="avatar-circle bg-light text-primary rounded-circle d-flex align-items-center justify-content-center fw-bold" style="width:34px; height:34px;">
                                             ${c['username'][:2].upper()}
                                         </div>
-                                        <div>
-                                            <span class="fw-bold text-dark d-block">${c['username']}</span>
+                                        <div class="d-flex align-items-center gap-2">
+                                            <span class="fw-bold text-dark">${c['username']}</span>
+                                            <span tal:condition="not show_proxy_option and c.get('is_proxy')" class="badge bg-warning text-dark border border-warning-subtle">
+                                                <i class="bi bi-shield-shaded me-1"></i>Proxy
+                                            </span>
                                         </div>
                                     </div>
                                 </td>
@@ -67,16 +70,26 @@
                                     </span>
                                 </td>
                                 <td>
-                                    <span class="badge bg-success-subtle text-success border border-success-subtle px-2 py-1">
-                                        <i class="bi bi-file-earmark-zip-fill me-1"></i>${c['filename']}
-                                    </span>
+                                    <div tal:condition="c.get('status') == 'ON'" class="d-inline-flex align-items-center">
+                                        <span class="badge bg-success font-monospace px-2 py-1">ON</span>
+                                        <span class="text-muted small font-monospace ms-2">${c.get('status_time')}</span>
+                                    </div>
+                                    <div tal:condition="c.get('status') == 'OFF'" class="d-inline-flex align-items-center">
+                                        <span class="badge bg-danger text-white font-monospace px-2 py-1">
+                                            OFF ${c.get('status_time')}
+                                        </span>
+                                    </div>
+                                    <div tal:condition="not c.get('status')">
+                                        <span class="text-muted small">-</span>
+                                    </div>
                                 </td>
                                 <td class="text-muted small">
                                     <i class="bi bi-clock me-1"></i>${c['modified']}
                                 </td>
                                 <td class="text-end">
                                     <div class="btn-group btn-group-sm">
-                                        <a href="${request.route_url('admin_set_proxy', username=c['username'])}" 
+                                        <a tal:condition="show_proxy_option"
+                                            href="${request.route_url('admin_set_proxy', username=c['username'])}" 
                                             class="btn ${'btn-warning fw-bold' if c.get('is_proxy') else 'btn-outline-warning'}" 
                                             title="${'User ini adalah proxy aktif' if c.get('is_proxy') else 'Set ' + c['username'] + ' sebagai proxy aktif'}">
                                             <i class="bi bi-shield-shaded me-1"></i> Proxy
@@ -90,6 +103,11 @@
                                             class="btn btn-outline-primary" 
                                             title="Ubah Password User">
                                             <i class="bi bi-key-fill me-1"></i> Ubah Password
+                                        </a>
+                                        <a href="${request.route_url('admin_revoke_user', username=c['username'])}" 
+                                            class="btn btn-outline-danger" 
+                                            title="Hapus User">
+                                            <i class="bi bi-trash-fill me-1"></i> Hapus
                                         </a>
                                     </div>
                                 </td>

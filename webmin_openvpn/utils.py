@@ -125,6 +125,28 @@ def load_ipp_map(ipp_file='/var/log/openvpn/ipp.txt'):
     return ipp_map
 
 
+def is_proxy_file_exists(proxy_file='/var/log/openvpn/proxy.txt'):
+    """
+    Check if proxy_file exists on system.
+    """
+    if not proxy_file:
+        return False
+    if os.path.exists(proxy_file):
+        return True
+    rc, _ = run_system_command(['test', '-f', proxy_file])
+    return rc == 0
+
+
+def is_no_more_proxy(settings):
+    """
+    Check if openvpn.no_more_proxy is True (default True).
+    """
+    val = settings.get('openvpn.no_more_proxy', 'true')
+    if isinstance(val, bool):
+        return val
+    return str(val).strip().lower() in ('true', 'yes', '1', 't')
+
+
 def get_proxy_user(proxy_file='/var/log/openvpn/proxy.txt'):
     """
     Read the single proxy-enabled username from proxy_file.
@@ -171,6 +193,38 @@ def set_proxy_user(username, new_proxy_cmd='/usr/local/bin/new-proxy-user',
         )
         return False
     return True
+
+
+def revoke_user(username, revoke_cmd='/usr/local/bin/revoke-user',
+                client_dir='/etc/openvpn/client'):
+    """
+    Execute revoke_cmd (default: /usr/local/bin/revoke-user) [username]
+    and remove [username].tgz from client_dir if revocation succeeds.
+    """
+    if not username:
+        return False, "Username tidak valid."
+
+    cmd = [revoke_cmd, username.strip().lower()]
+    rc, output = run_system_command(cmd)
+    if rc != 0:
+        logger.error(
+            "Failed to execute %s %s: rc=%s, output=%s",
+            revoke_cmd, username, rc, output
+        )
+        return False, output or f"Gagal mengeksekusi {revoke_cmd} (kode: {rc})"
+
+    if client_dir:
+        cert_path = os.path.join(client_dir, f"{username}.tgz")
+        if os.path.exists(cert_path):
+            try:
+                os.remove(cert_path)
+            except PermissionError:
+                run_system_command(['rm', '-f', cert_path])
+            except Exception as e:
+                logger.warning(
+                    "Gagal menghapus file cert %s: %s", cert_path, e)
+
+    return True, output
 
 
 def get_cert_details(client_dir, username, ipp_file='/var/log/openvpn/ipp.txt',
@@ -463,3 +517,39 @@ def get_system_stats():
         },
         'timestamp': now,
     }
+
+
+def generate_totp_secret():
+    """Generate a random Base32 TOTP secret string."""
+    import pyotp
+    return pyotp.random_base32()
+
+
+def generate_totp_uri(secret, username, issuer='WebminOpenVPN'):
+    """Generate otpauth:// URI for Google Authenticator."""
+    import pyotp
+    return pyotp.totp.TOTP(secret).provisioning_uri(
+        name=username, issuer_name=issuer)
+
+
+def generate_totp_qr_svg_base64(secret, username, issuer='WebminOpenVPN'):
+    """Generate Base64-encoded SVG data URI of the QR code."""
+    import qrcode
+    import qrcode.image.svg
+    import io
+    import base64
+
+    uri = generate_totp_uri(secret, username, issuer=issuer)
+    img = qrcode.make(uri, image_factory=qrcode.image.svg.SvgPathImage)
+    buf = io.BytesIO()
+    img.save(buf)
+    b64 = base64.b64encode(buf.getvalue()).decode('ascii')
+    return f"data:image/svg+xml;base64,{b64}"
+
+
+def format_totp_secret(secret):
+    """Format Base32 secret into 4-character chunks for manual entry."""
+    if not secret:
+        return ""
+    clean = secret.replace(" ", "").upper()
+    return " ".join(clean[i:i + 4] for i in range(0, len(clean), 4))

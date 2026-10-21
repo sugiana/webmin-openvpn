@@ -1,0 +1,19 @@
+#!/bin/sh
+
+username=$1
+
+if [ -z "$username" ]; then
+    echo "Caranya: sh $0 <user>"
+    echo "Contoh: sh $0 coba"
+    exit 1
+fi
+
+EASYRSA_PKI=/etc/openvpn/server/easyrsa3-ca/pki /etc/openvpn/server/easyrsa3-ca/easyrsa --batch --passin=file:/etc/openvpn/server/passphrase.txt revoke-issued $username || exit 1 
+EASYRSA_PKI=/etc/openvpn/server/easyrsa3-ca/pki /etc/openvpn/server/easyrsa3-ca/easyrsa --passin=file:/etc/openvpn/server/passphrase.txt gen-crl || exit 1
+
+found=$(grep ^crl-verify /etc/openvpn/server.conf)
+if [ -z "$found" ]; then
+    echo crl-verify /etc/openvpn/server/easyrsa3-ca/pki/crl.pem >> /etc/openvpn/server.conf
+fi
+
+systemctl restart openvpn@server

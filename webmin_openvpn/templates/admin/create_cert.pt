@@ -72,7 +72,7 @@
                                 <div class="form-text small">Password ini digunakan untuk autentikasi klien OpenVPN (PAM). Minimal 8 karakter.</div>
                             </div>
 
-                            <div class="mb-4">
+                            <div class="mb-4" tal:condition="show_proxy_option">
                                 <div class="form-check">
                                     <input 
                                         class="form-check-input" 
@@ -96,7 +96,7 @@
                                     <span class="small fw-bold text-secondary">Perintah yang akan dieksekusi:</span>
                                 </div>
                                 <code class="d-block text-break text-dark small" id="cmdPreview">
-                                    build-client-cert <span id="previewUser">${username or '[username]'}</span> <span id="previewProxy">${'proxy ' if proxy else ''}</span>login adduser pass=<span id="previewPass">******</span>
+                                    build-client-cert <span id="previewUser">${username or '[username]'}</span> <span id="previewProxy" tal:condition="show_proxy_option">${'proxy ' if proxy else ''}</span>login adduser pass=<span id="previewPass">******</span>
                                 </code>
                             </div>
 
@@ -148,6 +148,8 @@
                     chk.addEventListener('change', sync);
                     chk.addEventListener('click', sync);
                     sync();
+                } else if (preview) {
+                    preview.textContent = '';
                 }
             })();
         </script>

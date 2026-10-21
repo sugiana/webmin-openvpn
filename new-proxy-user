@@ -113,7 +113,7 @@ if [ -f "$PROXY_FILE" ]; then
     OLD_USER=$(cat $PROXY_FILE)
     if [ "$OLD_USER" = "$NEW_USER" ]; then
         echo "User proxy masih sama."
-        exit 1
+        exit 0 
     fi
     OLD_USER_IP=$(grep ^$OLD_USER, $IP_FILE)
     if [ -n "$OLD_USER_IP" ]; then

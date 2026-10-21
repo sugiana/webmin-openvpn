@@ -81,7 +81,6 @@ Buat file ``/etc/systemd/system/webmin-openvpn.service``::
     After=postgreql.service
 
     [Service]
-    Type=simple
     ExecStart=/home/sugiana/env/bin/pserve /home/sugiana/production.ini
 
     [Install]
@@ -93,6 +92,28 @@ Jalankan server::
     sudo systemctl start webmin-openvpn.service
 
 Aplikasi akan berjalan di: ``http://localhost:6543``.
+
+Buat file ``/etc/systemd/system/vpn-check.service``::
+
+    [Unit]
+    After=postgreql.service
+
+    [Service]
+    ExecStart=/home/sugiana/env/bin/vpn_check /home/sugiana/production.ini
+
+    [Install]
+    WantedBy=multi-user.target
+
+Jalankan pemantau konektivitas client ini::
+
+    sudo systemctl enable vpn-check.service
+    sudo systemctl start vpn-check.service
+
+Salin script penghapus sertifikat::
+
+    sudo cp webmin-openvpn/revoke-user /usr/local/bin/
+
+Script ini digunakan di menu Daftar Pengguna.
 
 
 Pengaturan Nginx

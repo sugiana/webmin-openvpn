@@ -11,6 +11,7 @@ from ..models.auth import (
     UserService,
     GroupService,
 )
+from ..models.network import VPN
 from ..utils import (
     run_system_command,
     sync_system_password,
@@ -20,6 +21,12 @@ from ..utils import (
     get_system_stats,
     get_proxy_user,
     set_proxy_user,
+    revoke_user,
+    is_proxy_file_exists,
+    is_no_more_proxy,
+    generate_totp_secret,
+    generate_totp_qr_svg_base64,
+    format_totp_secret,
 )
 
 
@@ -120,6 +127,10 @@ def admin_create_cert_view(request):
     proxy_file = settings.get(
         'openvpn.proxy_file', '/var/log/openvpn/proxy.txt')
 
+    proxy_exists = is_proxy_file_exists(proxy_file)
+    no_more_proxy = is_no_more_proxy(settings)
+    show_proxy_option = not (proxy_exists and no_more_proxy)
+
     username = ''
     proxy = False
     cmd_output = None
@@ -128,7 +139,8 @@ def admin_create_cert_view(request):
     if request.method == 'POST':
         username = request.params.get('username', '').strip().lower()
         password = request.params.get('password', '')
-        proxy = bool(request.params.get('proxy'))
+        proxy = bool(request.params.get('proxy')) \
+            if show_proxy_option else False
 
         # Validation
         if not username or not password:
@@ -178,6 +190,7 @@ def admin_create_cert_view(request):
         'user': request.user,
         'username': username,
         'proxy': proxy,
+        'show_proxy_option': show_proxy_option,
         'cmd_output': cmd_output,
         'cmd_success': cmd_success,
         'client_dir': client_dir,
@@ -201,9 +214,41 @@ def admin_users_view(request):
     proxy_file = settings.get(
         'openvpn.proxy_file', '/var/log/openvpn/proxy.txt')
 
+    proxy_exists = is_proxy_file_exists(proxy_file)
+    no_more_proxy = is_no_more_proxy(settings)
+    show_proxy_option = not (proxy_exists and no_more_proxy)
+
     clients = list_client_certificates(
         client_dir, ipp_file=ipp_file, proxy_file=proxy_file)
     proxy_user = get_proxy_user(proxy_file)
+
+    # Status koneksi VPN dari tabel openvpn (diisi oleh cron)
+    vpn_rows = request.dbsession.query(VPN).all()
+    vpn_map = {row.nama: row for row in vpn_rows if row.nama}
+    vpn_map_lower = {row.nama.lower(): row for row in vpn_rows if row.nama}
+
+    for c in clients:
+        u = c['username']
+        vpn_item = vpn_map.get(u) or vpn_map_lower.get(u.lower())
+        if vpn_item:
+            status_str = 'ON' if vpn_item.terhubung else 'OFF'
+            dt = vpn_item.perubahan
+            if dt:
+                try:
+                    dt_str = dt.strftime('%d/%m/%Y %H:%M:%S')
+                except Exception:
+                    dt_str = str(dt)
+            else:
+                dt_str = '-'
+            c['status'] = status_str
+            c['status_time'] = dt_str
+            c['terhubung'] = vpn_item.terhubung
+            if (not c.get('ip') or c.get('ip') == '-') and vpn_item.ip:
+                c['ip'] = vpn_item.ip
+        else:
+            c['status'] = None
+            c['status_time'] = '-'
+            c['terhubung'] = None
 
     return {
         'user': request.user,
@@ -212,6 +257,7 @@ def admin_users_view(request):
         'ipp_file': ipp_file,
         'proxy_file': proxy_file,
         'proxy_user': proxy_user,
+        'show_proxy_option': show_proxy_option,
     }
 
 
@@ -346,10 +392,17 @@ def admin_set_proxy_view(request):
         return HTTPFound(location=request.route_url('admin_users'))
 
     settings = request.registry.settings
-    new_proxy_cmd = settings.get(
-        'openvpn.new_proxy_cmd', '/usr/local/bin/new-proxy-user')
     proxy_file = settings.get(
         'openvpn.proxy_file', '/var/log/openvpn/proxy.txt')
+
+    proxy_exists = is_proxy_file_exists(proxy_file)
+    no_more_proxy = is_no_more_proxy(settings)
+    if proxy_exists and no_more_proxy:
+        request.session.flash('Opsi proxy dinonaktifkan.', 'warning')
+        return HTTPFound(location=request.route_url('admin_users'))
+
+    new_proxy_cmd = settings.get(
+        'openvpn.new_proxy_cmd', '/usr/local/bin/new-proxy-user')
 
     success = set_proxy_user(
         username, new_proxy_cmd=new_proxy_cmd, proxy_file=proxy_file)
@@ -367,9 +420,174 @@ def admin_set_proxy_view(request):
     return HTTPFound(location=request.route_url('admin_users'))
 
 
+@view_config(
+    route_name='admin_revoke_user',
+    renderer='webmin_openvpn:templates/admin/revoke_user.pt',
+    permission='admin',
+)
+def admin_revoke_user_view(request):
+    """
+    Admin: Konfirmasi dan hapus (revoke) user OpenVPN.
+    """
+    username = request.matchdict.get('username', '').strip().lower()
+    if not username or not re.match(r'^[a-z0-9_\-\.]+$', username):
+        request.session.flash('Username tidak valid.', 'danger')
+        return HTTPFound(location=request.route_url('admin_users'))
+
+    settings = request.registry.settings
+    client_dir = settings.get('openvpn.client_dir', '/etc/openvpn/client')
+    revoke_cmd = settings.get(
+        'openvpn.revoke_cmd', '/usr/local/bin/revoke-user')
+    expected_text = f"Silakan hapus {username}"
+
+    if request.method == 'POST':
+        action = request.params.get('action', '')
+        if action == 'cancel':
+            return HTTPFound(location=request.route_url('admin_users'))
+
+        confirm_text = request.params.get('confirm_text', '').strip()
+        if confirm_text != expected_text:
+            request.session.flash(
+                f'Kalimat konfirmasi belum sesuai. '
+                f'Harap ketik persis: "{expected_text}".',
+                'danger',
+            )
+            return {
+                'user': request.user,
+                'target_username': username,
+                'expected_text': expected_text,
+                'user_input': confirm_text,
+            }
+
+        success, output = revoke_user(
+            username, revoke_cmd=revoke_cmd, client_dir=client_dir)
+        if success:
+            request.session.flash(
+                f'User "{username}" berhasil dihapus.',
+                'success',
+            )
+            return HTTPFound(location=request.route_url('admin_users'))
+        else:
+            request.session.flash(
+                f'Gagal menghapus user "{username}": {output}',
+                'danger',
+            )
+            return {
+                'user': request.user,
+                'target_username': username,
+                'expected_text': expected_text,
+                'user_input': confirm_text,
+            }
+
+    return {
+        'user': request.user,
+        'target_username': username,
+        'expected_text': expected_text,
+        'user_input': '',
+    }
+
+
+@view_config(
+    route_name='admin_2fa',
+    renderer='webmin_openvpn:templates/admin/two_factor.pt',
+    permission='admin',
+)
+def admin_2fa_view(request):
+    """
+    Admin: Two-Factor Authentication (2FA) Google Authenticator settings.
+    Allows enabling and disabling TOTP-based 2FA.
+    """
+    user = request.user
+
+    if request.method == 'POST':
+        action = request.params.get('action', '')
+
+        if action == 'disable':
+            # Confirm with account password
+            password = request.params.get('password', '')
+            if not password:
+                request.session.flash(
+                    'Harap masukkan kata sandi akun Anda untuk konfirmasi.',
+                    'danger',
+                )
+            elif not user.check_password(password):
+                request.session.flash(
+                    'Kata sandi yang Anda masukkan salah.', 'danger')
+            else:
+                user.totp_secret = None
+                request.dbsession.flush()
+                request.session.pop('pending_2fa_secret', None)
+                request.session.flash(
+                    'Two-Factor Authentication berhasil dinonaktifkan.',
+                    'warning',
+                )
+                return HTTPFound(location=request.route_url('admin_2fa'))
+
+        elif action == 'enable':
+            token = request.params.get('token', '').strip().replace(' ', '')
+            pending_secret = request.session.get('pending_2fa_secret')
+
+            if not pending_secret:
+                request.session.flash(
+                    'Sesi pembuatan 2FA telah kedaluwarsa. Silakan ulangi.',
+                    'warning',
+                )
+                return HTTPFound(location=request.route_url('admin_2fa'))
+
+            if not token:
+                request.session.flash(
+                    'Harap masukkan 6 digit kode dari Google Authenticator.',
+                    'danger',
+                )
+            elif len(token) != 6 or not token.isdigit():
+                request.session.flash(
+                    'Kode verifikasi harus terdiri dari 6 angka.', 'danger')
+            else:
+                import pyotp
+                totp = pyotp.TOTP(pending_secret)
+                if totp.verify(token, valid_window=1):
+                    user.totp_secret = pending_secret
+                    request.dbsession.flush()
+                    request.session.pop('pending_2fa_secret', None)
+                    request.session.flash(
+                        'Two-Factor Authentication (Google Authenticator) '
+                        'berhasil diaktifkan! Akun Anda kini lebih aman.',
+                        'success',
+                    )
+                    return HTTPFound(location=request.route_url('admin_2fa'))
+                else:
+                    request.session.flash(
+                        'Kode verifikasi tidak valid atau kedaluwarsa. '
+                        'Pastikan jam di perangkat Android Anda tepat.',
+                        'danger',
+                    )
+
+    # Prepare secret and QR code if 2FA is not yet active
+    qr_svg = None
+    formatted_secret = None
+    raw_secret = None
+    if not user.has_2fa:
+        pending_secret = request.session.get('pending_2fa_secret')
+        if not pending_secret:
+            pending_secret = generate_totp_secret()
+            request.session['pending_2fa_secret'] = pending_secret
+        raw_secret = pending_secret
+        formatted_secret = format_totp_secret(pending_secret)
+        qr_svg = generate_totp_qr_svg_base64(
+            pending_secret, user.user_name, issuer='WebminOpenVPN')
+
+    return {
+        'user': user,
+        'qr_svg': qr_svg,
+        'secret': raw_secret,
+        'formatted_secret': formatted_secret,
+    }
+
+
 def includeme(config):
     config.add_route('admin_dashboard', '/admin')
     config.add_route('admin_change_password', '/admin/change-password')
+    config.add_route('admin_2fa', '/admin/2fa')
     config.add_route('admin_create_cert', '/admin/create-cert')
     config.add_route('admin_users', '/admin/users')
     config.add_route(
@@ -381,5 +599,8 @@ def includeme(config):
     config.add_route(
         'admin_set_proxy',
         '/admin/users/{username:[a-z0-9_\\-\\.]+}/proxy')
+    config.add_route(
+        'admin_revoke_user',
+        '/admin/users/{username:[a-z0-9_\\-\\.]+}/revoke')
     config.add_route('admin_system_stats', '/admin/api/system-stats')
     config.scan(__name__)

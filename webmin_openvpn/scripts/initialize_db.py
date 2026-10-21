@@ -94,13 +94,21 @@ def main(argv=sys.argv):
     args = parse_args(argv)
     setup_logging(args.config_uri)
     env = bootstrap(args.config_uri)
-
     try:
         with env['request'].tm:
             dbsession = env['request'].dbsession
             engine = dbsession.bind
             print(f"Creating tables in database: {engine.url}")
             Base.metadata.create_all(engine)
+            try:
+                import sqlalchemy as sa
+                with engine.connect() as conn:
+                    conn.execute(sa.text(
+                        "ALTER TABLE users ADD COLUMN IF NOT EXISTS "
+                        "totp_secret VARCHAR(64);"))
+                    conn.commit()
+            except Exception:
+                pass
             setup_models(
                 dbsession,
                 admin_user=args.admin_user,
