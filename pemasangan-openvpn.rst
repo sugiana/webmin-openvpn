@@ -149,14 +149,15 @@ Kemudian file ``/etc/openvpn/server/script/client-up`` berisi ini::
     if [ -f $PROXY_FILE ]; then
         USER=$(cat $PROXY_FILE | awk -F':' '{print $1}')
         if [ "$common_name" = "$USER" ]; then
-            PORTS=$(cat $PROXY_FILE | awk -F':' '{print $2}')
-            /usr/local/bin/new-proxy-user $ifconfig_pool_remote_ip $PORTS
+            /usr/local/bin/firewall $ifconfig_pool_remote_ip
         fi
+    else
+        /usr/local/bin/firewall
     fi
 
 Salin file untuk menjalankan ``iptables``::
 
-    sudo cp new-proxy-user /usr/local/bin/
+    sudo cp firewall /usr/local/bin/
 
 Hapus baris ``client-disconnect`` di ``/etc/openvpn/server.conf`` sehingga menjadi::
 

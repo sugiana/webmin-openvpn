@@ -1,19 +1,23 @@
 import sys
 import re
 import argparse
-from datetime import datetime
+from datetime import (
+    datetime,
+    timezone,
+    )
 from subprocess import (
     Popen,
     PIPE,
     )
 from pyramid.paster import bootstrap, setup_logging
 from sqlalchemy import engine_from_config
+from ..utils import load_ipp_map
 from ..models.network import VPN
 
 
 REGEX_ON = re.compile(
     r'^([\d]*-[\d]*-[\d]*T[\d]*:[\d]*:[\d]*[+-][\d]*:[\d]*) (.*): '
-    r'(.*)/(.*) MULTI_sva: pool returned IPv4=(.*), (.*)')
+    r'(.*)/(.*):(.*) MULTI: primary virtual IP for (.*)/(.*):(.*): (.*)')
 REGEX_OFF = re.compile(
     r'^([\d]*-[\d]*-[\d]*T[\d]*:[\d]*:[\d]*[+-][\d]*:[\d]*) (.*): '
     r'(.*)/(.*) Connection reset, (.*)')
@@ -39,13 +43,12 @@ def read_once():
         match = REGEX_ON.search(line)
         if match:
             new_status = True
-            ip = match.group(5)
+            ip = match.group(9)
         else:
             match = REGEX_OFF.search(line)
-            if match:
-                new_status = False
-            else:
+            if not match:
                 continue
+            new_status = False
         dt = match.group(1)
         user = match.group(3)
         dt = datetime.strptime(dt, '%Y-%m-%dT%H:%M:%S%z')
@@ -71,13 +74,12 @@ def read_forever():
         match = REGEX_ON.search(line)
         if match:
             new_status = True
-            ip = match.group(5)
+            ip = match.group(9)
         else:
             match = REGEX_OFF.search(line)
-            if match:
-                new_status = False
-            else:
+            if not match:
                 continue
+            new_status = False
         dt = match.group(1)
         user = match.group(3)
         dt = datetime.strptime(dt, '%Y-%m-%dT%H:%M:%S%z')
@@ -94,7 +96,21 @@ def read_forever():
         show(dt, user, new_status)
 
 
-def save(env, nama: str, terhubung: bool, perubahan: datetime, ip: str):
+def ping(ip: str) -> bool:
+    cmd1 = ['ping', '-c1', '-w', '2', ip]
+    cmd2 = ['grep', 'received']
+    cmd3 = ['cut', '-f4', '-d', ' ']
+    p1 = Popen(cmd1, stdout=PIPE)
+    p2 = Popen(cmd2, stdin=p1.stdout, stdout=PIPE)
+    p3 = Popen(cmd3, stdin=p2.stdout, stdout=PIPE)
+    stdout, stderr = p3.communicate()
+    n = stdout.decode('utf-8').rstrip()
+    return n == '1'
+
+
+def save(
+        env, nama: str, terhubung: bool, perubahan: datetime, ip: str,
+        ip_sumber: str = None):
     with env['request'].tm:
         dbsession = env['request'].dbsession
         q = dbsession.query(VPN).filter_by(ip=ip)
@@ -115,6 +131,8 @@ def save(env, nama: str, terhubung: bool, perubahan: datetime, ip: str):
             row = VPN(nama=nama, ip=ip)
         row.terhubung = terhubung
         row.perubahan = perubahan
+        if ip_sumber:
+            row.ip_sumber = ip_sumber
         dbsession.add(row)
 
 
@@ -134,7 +152,11 @@ def main(argv=sys.argv):
     setup_logging(args.config_uri)
     env = bootstrap(args.config_uri)
     status = dict()
-    user_ip = dict()
+    user_ip = load_ipp_map()
+    for user, ip in user_ip.items():
+        new_status = ping(ip)
+        dt = datetime.now(tz=timezone.utc)
+        save(env, user, new_status, dt, ip)
     # Baca log
     cmd = ['journalctl', '-u', 'openvpn@server', '--output=short-iso']
     print(' '.join(cmd))
@@ -144,18 +166,19 @@ def main(argv=sys.argv):
         match = REGEX_ON.search(line)
         if match:
             new_status = True
-            ip = match.group(5)
+            ip = match.group(9)
+            ip_sumber = match.group(4)
         else:
             match = REGEX_OFF.search(line)
-            if match:
-                new_status = False
-            else:
+            if not match:
                 continue
+            new_status = False
+            ip_sumber = None
         dt = match.group(1)
         user = match.group(3)
         dt = datetime.strptime(dt, '%Y-%m-%dT%H:%M:%S%z')
         if new_status:
-            if ip not in user_ip:
+            if user not in user_ip:
                 user_ip[user] = ip
         if user not in status:
             status[user] = dict(status=new_status, dt=dt)
@@ -168,7 +191,7 @@ def main(argv=sys.argv):
         if user not in user_ip:
             continue
         ip = user_ip[user]
-        save(env, user, v['status'], v['dt'], ip)
+        save(env, user, v['status'], v['dt'], ip, ip_sumber)
     # Pantau perubahan log
     cmd += ['-f']
     print(' '.join(cmd))
@@ -178,13 +201,14 @@ def main(argv=sys.argv):
         match = REGEX_ON.search(line)
         if match:
             new_status = True
-            ip = match.group(5)
+            ip = match.group(9)
+            ip_sumber = match.group(4)
         else:
             match = REGEX_OFF.search(line)
-            if match:
-                new_status = False
-            else:
+            if not match:
                 continue
+            new_status = False
+            ip_sumber = None
         dt = match.group(1)
         user = match.group(3)
         dt = datetime.strptime(dt, '%Y-%m-%dT%H:%M:%S%z')
@@ -194,4 +218,4 @@ def main(argv=sys.argv):
         if user not in user_ip:
             continue
         ip = user_ip[user]
-        save(env, user, new_status, dt, ip)
+        save(env, user, new_status, dt, ip, ip_sumber)

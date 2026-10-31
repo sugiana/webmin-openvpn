@@ -24,11 +24,15 @@ from ..utils import (
     get_proxy_ports,
     set_proxy_user,
     revoke_user,
+    check_and_remove_proxy_user,
     is_proxy_file_exists,
     is_no_more_proxy,
     generate_totp_secret,
     generate_totp_qr_svg_base64,
     format_totp_secret,
+    validate_ip_list,
+    read_ip_list_file,
+    save_ip_list_file,
 )
 
 
@@ -124,10 +128,10 @@ def admin_create_cert_view(request):
     client_dir = settings.get('openvpn.client_dir', '/etc/openvpn/client')
     build_cert_cmd = settings.get(
         'openvpn.build_cert_cmd', '/usr/local/bin/build-client-cert')
-    new_proxy_cmd = settings.get(
-        'openvpn.new_proxy_cmd', '/usr/local/bin/new-proxy-user')
     proxy_file = settings.get(
         'openvpn.proxy_file', '/var/log/openvpn/proxy.txt')
+    firewall_cmd = settings.get(
+        'openvpn.firewall_cmd', '/usr/local/bin/firewall')
 
     proxy_exists = is_proxy_file_exists(proxy_file)
     no_more_proxy = is_no_more_proxy(settings)
@@ -175,8 +179,8 @@ def admin_create_cert_view(request):
                 # Update proxy.txt only if proxy was checked
                 if proxy:
                     set_proxy_user(
-                        username, new_proxy_cmd=new_proxy_cmd,
-                        proxy_file=proxy_file)
+                        username, proxy_file=proxy_file,
+                        firewall_cmd=firewall_cmd)
 
                 request.session.flash(
                     f'Sertifikat OpenVPN untuk "{username}" berhasil dibuat!',
@@ -247,10 +251,12 @@ def admin_users_view(request):
             c['terhubung'] = vpn_item.terhubung
             if (not c.get('ip') or c.get('ip') == '-') and vpn_item.ip:
                 c['ip'] = vpn_item.ip
+            c['ip_sumber'] = vpn_item.ip_sumber
         else:
             c['status'] = None
             c['status_time'] = '-'
             c['terhubung'] = None
+            c['ip_sumber'] = None
 
     proxy_user, reverse_proxy_ports = get_proxy_info(proxy_file)
 
@@ -399,6 +405,8 @@ def admin_set_proxy_view(request):
     settings = request.registry.settings
     proxy_file = settings.get(
         'openvpn.proxy_file', '/var/log/openvpn/proxy.txt')
+    firewall_cmd = settings.get(
+        'openvpn.firewall_cmd', '/usr/local/bin/firewall')
 
     proxy_exists = is_proxy_file_exists(proxy_file)
     no_more_proxy = is_no_more_proxy(settings)
@@ -406,11 +414,8 @@ def admin_set_proxy_view(request):
         request.session.flash('Opsi proxy dinonaktifkan.', 'warning')
         return HTTPFound(location=request.route_url('admin_users'))
 
-    new_proxy_cmd = settings.get(
-        'openvpn.new_proxy_cmd', '/usr/local/bin/new-proxy-user')
-
     success = set_proxy_user(
-        username, new_proxy_cmd=new_proxy_cmd, proxy_file=proxy_file)
+        username, proxy_file=proxy_file, firewall_cmd=firewall_cmd)
     if success:
         request.session.flash(
             f'User "{username}" berhasil diset sebagai proxy aktif.',
@@ -432,8 +437,10 @@ def admin_set_proxy_view(request):
 def admin_reverse_proxy_ports_view(request):
     """
     Admin: Mengatur reverse proxy ports.
-    Pilihan 1: /usr/local/bin/new-proxy-user [username]
-    Pilihan 2: /usr/local/bin/new-proxy-user [username] [ports]
+    Pilihan 1: Menyimpan [username] ke file proxy.txt lalu jalankan
+               /usr/local/bin/firewall
+    Pilihan 2: Menyimpan [username]:[ports] ke file proxy.txt lalu jalankan
+               /usr/local/bin/firewall
     """
     if request.method != 'POST':
         return HTTPFound(location=request.route_url('admin_users'))
@@ -441,8 +448,8 @@ def admin_reverse_proxy_ports_view(request):
     settings = request.registry.settings
     proxy_file = settings.get(
         'openvpn.proxy_file', '/var/log/openvpn/proxy.txt')
-    new_proxy_cmd = settings.get(
-        'openvpn.new_proxy_cmd', '/usr/local/bin/new-proxy-user')
+    firewall_cmd = settings.get(
+        'openvpn.firewall_cmd', '/usr/local/bin/firewall')
 
     username = request.params.get('username', '').strip().lower()
     if not username:
@@ -458,8 +465,8 @@ def admin_reverse_proxy_ports_view(request):
         success = set_proxy_user(
             username,
             ports=None,
-            new_proxy_cmd=new_proxy_cmd,
             proxy_file=proxy_file,
+            firewall_cmd=firewall_cmd,
         )
         if success:
             request.session.flash(
@@ -521,8 +528,8 @@ def admin_reverse_proxy_ports_view(request):
         success = set_proxy_user(
             username,
             ports=ports_str,
-            new_proxy_cmd=new_proxy_cmd,
             proxy_file=proxy_file,
+            firewall_cmd=firewall_cmd,
         )
         if success:
             request.session.flash(
@@ -559,6 +566,8 @@ def admin_revoke_user_view(request):
     client_dir = settings.get('openvpn.client_dir', '/etc/openvpn/client')
     revoke_cmd = settings.get(
         'openvpn.revoke_cmd', '/usr/local/bin/revoke-user')
+    proxy_file = settings.get(
+        'openvpn.proxy_file', '/var/log/openvpn/proxy.txt')
     expected_text = f"Silakan hapus {username}"
 
     if request.method == 'POST':
@@ -581,8 +590,13 @@ def admin_revoke_user_view(request):
             }
 
         success, output = revoke_user(
-            username, revoke_cmd=revoke_cmd, client_dir=client_dir)
+            username,
+            revoke_cmd=revoke_cmd,
+            client_dir=client_dir,
+            proxy_file=proxy_file,
+        )
         if success:
+            check_and_remove_proxy_user(username, proxy_file=proxy_file)
             request.session.flash(
                 f'User "{username}" berhasil dihapus.',
                 'success',
@@ -705,10 +719,108 @@ def admin_2fa_view(request):
     }
 
 
+@view_config(
+    route_name='admin_firewall',
+    renderer='webmin_openvpn:templates/admin/firewall.pt',
+    permission='admin',
+)
+def admin_firewall_view(request):
+    """
+    Admin: Manajemen Firewall iptables (Blacklist & Whitelist).
+    """
+    settings = request.registry.settings
+    blacklist_file = settings.get(
+        'openvpn.blacklist_file', '/etc/iptables/blacklist')
+    whitelist_file = settings.get(
+        'openvpn.whitelist_file', '/etc/iptables/whitelist')
+    firewall_cmd = settings.get(
+        'openvpn.firewall_cmd', '/usr/local/bin/firewall')
+
+    cmd_output = None
+    cmd_success = None
+
+    if request.method == 'POST':
+        blacklist_raw = request.params.get('blacklist', '')
+        whitelist_raw = request.params.get('whitelist', '')
+
+        b_valid, b_ips, b_err = validate_ip_list(blacklist_raw)
+        if not b_valid:
+            request.session.flash(f'Blacklist: {b_err}', 'danger')
+            return {
+                'user': request.user,
+                'blacklist': blacklist_raw,
+                'whitelist': whitelist_raw,
+                'cmd_output': None,
+                'cmd_success': None,
+                'blacklist_file': blacklist_file,
+                'whitelist_file': whitelist_file,
+            }
+
+        w_valid, w_ips, w_err = validate_ip_list(whitelist_raw)
+        if not w_valid:
+            request.session.flash(f'Whitelist: {w_err}', 'danger')
+            return {
+                'user': request.user,
+                'blacklist': blacklist_raw,
+                'whitelist': whitelist_raw,
+                'cmd_output': None,
+                'cmd_success': None,
+                'blacklist_file': blacklist_file,
+                'whitelist_file': whitelist_file,
+            }
+
+        # 1. Simpan Blacklist
+        save_ip_list_file(blacklist_file, b_ips)
+
+        # 2. Simpan Whitelist
+        save_ip_list_file(whitelist_file, w_ips)
+
+        # 3. Jalankan /usr/local/bin/firewall
+        rc, cmd_output = run_system_command([firewall_cmd])
+        cmd_success = (rc == 0)
+
+        if cmd_success:
+            request.session.flash(
+                'Pengaturan firewall berhasil disimpan dan diterapkan.',
+                'success',
+            )
+        else:
+            request.session.flash(
+                'Pengaturan firewall disimpan, namun eksekusi skrip firewall '
+                f'gagal (kode: {rc}).',
+                'danger',
+            )
+
+        return {
+            'user': request.user,
+            'blacklist': '\n'.join(b_ips),
+            'whitelist': '\n'.join(w_ips),
+            'cmd_output': cmd_output,
+            'cmd_success': cmd_success,
+            'blacklist_file': blacklist_file,
+            'whitelist_file': whitelist_file,
+        }
+
+    # GET
+    blacklist_content = read_ip_list_file(blacklist_file).strip()
+    whitelist_content = read_ip_list_file(whitelist_file).strip()
+
+    return {
+        'user': request.user,
+        'blacklist': blacklist_content,
+        'whitelist': whitelist_content,
+        'cmd_output': None,
+        'cmd_success': None,
+        'blacklist_file': blacklist_file,
+        'whitelist_file': whitelist_file,
+    }
+
+
 def includeme(config):
     config.add_route('admin_dashboard', '/admin')
     config.add_route('admin_change_password', '/admin/change-password')
     config.add_route('admin_2fa', '/admin/2fa')
+    config.add_route('admin_firewall', '/admin/firewall')
     config.add_route('admin_create_cert', '/admin/create-cert')
     config.add_route('admin_users', '/admin/users')
     config.add_route(

@@ -3,6 +3,7 @@ import time
 import pwd
 import subprocess
 import logging
+import ipaddress
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
@@ -12,7 +13,7 @@ _last_cpu_stat = None
 _last_net_stat = None
 
 
-def run_system_command(cmd_args, timeout=120):
+def run_system_command(cmd_args, timeout=120, input_data=None):
     """
     Execute a system command safely.
     If the current process is not root, prepend 'sudo' if available.
@@ -25,11 +26,12 @@ def run_system_command(cmd_args, timeout=120):
     try:
         process = subprocess.Popen(
             cmd_args,
+            stdin=subprocess.PIPE if input_data is not None else None,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
         )
-        stdout, _ = process.communicate(timeout=timeout)
+        stdout, _ = process.communicate(input=input_data, timeout=timeout)
         return process.returncode, stdout
     except subprocess.TimeoutExpired:
         process.kill()
@@ -210,40 +212,107 @@ def get_proxy_ports(proxy_file='/var/log/openvpn/proxy.txt'):
 get_reverse_proxy_ports = get_proxy_ports
 
 
-def set_proxy_user(username, ports=None,
-                   new_proxy_cmd='/usr/local/bin/new-proxy-user',
-                   proxy_file=None):
+def save_proxy_file(proxy_file, username, ports=None):
     """
-    Execute new_proxy_cmd [username] [ports] to set the proxy-enabled
-    user. If ports is provided, executes:
-      /usr/local/bin/new-proxy-user [username] [ports]
-    Otherwise:
-      /usr/local/bin/new-proxy-user [username]
-    The script handles saving the user (and optional ports) to
-    /var/log/openvpn/proxy.txt.
+    Save proxy user and optional ports to proxy_file.
+    If ports is provided: '[username]:[ports]\n'
+    Otherwise: '[username]\n'
+    """
+    if not username or not proxy_file:
+        return False
+
+    content = (f"{username.strip().lower()}:{ports.strip()}\n"
+               if ports else f"{username.strip().lower()}\n")
+    try:
+        dir_name = os.path.dirname(proxy_file)
+        if dir_name and not os.path.exists(dir_name):
+            os.makedirs(dir_name, exist_ok=True)
+        with open(proxy_file, 'w', encoding='utf-8') as f:
+            f.write(content)
+        return True
+    except PermissionError:
+        cmd = ['tee', proxy_file]
+        rc, _ = run_system_command(cmd, input_data=content)
+        return rc == 0
+    except Exception as e:
+        logger.error("Failed to write to proxy file %s: %s", proxy_file, e)
+        return False
+
+
+def set_proxy_user(username, ports=None,
+                   proxy_file='/var/log/openvpn/proxy.txt',
+                   firewall_cmd='/usr/local/bin/firewall',
+                   **kwargs):
+    """
+    Set the proxy-enabled user by saving to proxy_file and executing
+    firewall_cmd.
+    Pilihan 1 (ports is None):
+      Menyimpan [username] ke file proxy_file.
+    Pilihan 2 (ports provided):
+      Menyimpan [username]:[ports] ke file proxy_file.
+    Setelah penyimpanan file, jalankan firewall_cmd tanpa argumen.
     """
     if not username:
         return False
 
-    cmd = [new_proxy_cmd, username.strip().lower()]
-    if ports:
-        cmd.append(ports.strip())
+    proxy_file = proxy_file or '/var/log/openvpn/proxy.txt'
+    firewall_cmd = firewall_cmd or '/usr/local/bin/firewall'
 
-    rc, output = run_system_command(cmd)
+    # 1. Simpan ke file proxy_file
+    if not save_proxy_file(proxy_file, username, ports=ports):
+        logger.error("Failed to save proxy user to %s", proxy_file)
+        return False
+
+    # 2. Jalankan firewall_cmd tanpa argumen
+    rc, output = run_system_command([firewall_cmd])
     if rc != 0:
         logger.error(
             "Failed to execute %s: rc=%s, output=%s",
-            " ".join(cmd), rc, output
+            firewall_cmd, rc, output
         )
         return False
     return True
 
 
+def check_and_remove_proxy_user(
+        username, proxy_file='/var/log/openvpn/proxy.txt'):
+    """
+    Check if proxy_file has username as the proxy user.
+    If so, remove proxy_file.
+    Returns True if proxy_file was removed, False otherwise.
+    """
+    if not username or not proxy_file:
+        return False
+
+    proxy_user = get_proxy_user(proxy_file)
+    if proxy_user and proxy_user.strip().lower() == username.strip().lower():
+        if os.path.exists(proxy_file):
+            try:
+                os.remove(proxy_file)
+                logger.info(
+                    "Proxy file %s berhasil dihapus untuk user %s",
+                    proxy_file, username)
+                return True
+            except PermissionError:
+                rc, _ = run_system_command(['rm', '-f', proxy_file])
+                return rc == 0
+            except Exception as e:
+                logger.warning(
+                    "Gagal menghapus file proxy %s: %s", proxy_file, e)
+                return False
+        else:
+            rc, _ = run_system_command(['rm', '-f', proxy_file])
+            return rc == 0
+    return False
+
+
 def revoke_user(username, revoke_cmd='/usr/local/bin/revoke-user',
-                client_dir='/etc/openvpn/client'):
+                client_dir='/etc/openvpn/client',
+                proxy_file=None):
     """
     Execute revoke_cmd (default: /usr/local/bin/revoke-user) [username]
     and remove [username].tgz from client_dir if revocation succeeds.
+    Also remove proxy_file if the proxy user matches username.
     """
     if not username:
         return False, "Username tidak valid."
@@ -267,6 +336,9 @@ def revoke_user(username, revoke_cmd='/usr/local/bin/revoke-user',
             except Exception as e:
                 logger.warning(
                     "Gagal menghapus file cert %s: %s", cert_path, e)
+
+    if proxy_file:
+        check_and_remove_proxy_user(username, proxy_file=proxy_file)
 
     return True, output
 
@@ -360,6 +432,7 @@ def list_client_certificates(client_dir, ipp_file='/var/log/openvpn/ipp.txt',
                 'modified': mtime,
                 'mtime_epoch': mtime_epoch,
                 'ip': ip_addr,
+                'ip_sumber': None,
                 'is_proxy': is_proxy,
             })
 
@@ -597,3 +670,117 @@ def format_totp_secret(secret):
         return ""
     clean = secret.replace(" ", "").upper()
     return " ".join(clean[i:i + 4] for i in range(0, len(clean), 4))
+
+
+def validate_ip_list(text):
+    """
+    Validates that each line in text is either an IPv4 address or
+    empty/whitespace.
+    Returns:
+        tuple (is_valid: bool, ips: list[str], error_message: str or None)
+    """
+    if not text:
+        return True, [], None
+
+    ips = []
+    lines = text.splitlines()
+    for idx, raw_line in enumerate(lines, start=1):
+        line = raw_line.strip()
+        if not line:
+            continue
+        try:
+            ip_obj = ipaddress.IPv4Address(line)
+            ips.append(str(ip_obj))
+        except ValueError:
+            return (
+                False,
+                [],
+                f'Baris {idx} ("{line}") bukan alamat IPv4 yang valid.',
+            )
+
+    seen = set()
+    unique_ips = [ip for ip in ips if not (ip in seen or seen.add(ip))]
+    return True, unique_ips, None
+
+
+def read_ip_list_file(filepath):
+    """
+    Read IP list file if exists, return string.
+    If file doesn't exist, return empty string.
+    """
+    if not filepath:
+        return ""
+    if os.path.exists(filepath):
+        try:
+            with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
+                return f.read()
+        except PermissionError:
+            rc, out = run_system_command(['cat', filepath])
+            if rc == 0:
+                return out
+            return ""
+        except Exception as e:
+            logger.warning("Failed to read %s: %s", filepath, e)
+            return ""
+    else:
+        rc, out = run_system_command(['cat', filepath])
+        if rc == 0:
+            return out
+        return ""
+
+
+def save_ip_list_file(filepath, ips):
+    """
+    If ips is non-empty list of IP strings, write to filepath (one per line).
+    If ips is empty, remove filepath if it exists.
+    """
+    if not filepath:
+        return False
+
+    if ips:
+        content = "\n".join(ips) + "\n"
+        dirname = os.path.dirname(filepath)
+        if dirname and not os.path.exists(dirname):
+            try:
+                os.makedirs(dirname, exist_ok=True)
+            except PermissionError:
+                run_system_command(['mkdir', '-p', dirname])
+
+        try:
+            with open(filepath, 'w', encoding='utf-8') as f:
+                f.write(content)
+            return True
+        except PermissionError:
+            cmd = ['tee', filepath]
+            if os.geteuid() != 0:
+                cmd = ['sudo'] + cmd
+            p = subprocess.Popen(
+                cmd,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            _, err = p.communicate(input=content, timeout=15)
+            if p.returncode != 0:
+                logger.error(
+                    "Failed to write %s via sudo tee: %s", filepath, err)
+                return False
+            return True
+        except Exception as e:
+            logger.error("Failed to write %s: %s", filepath, e)
+            return False
+    else:
+        if os.path.exists(filepath):
+            try:
+                os.remove(filepath)
+                return True
+            except PermissionError:
+                rc, _ = run_system_command(['rm', '-f', filepath])
+                return rc == 0
+            except Exception as e:
+                logger.error("Failed to remove %s: %s", filepath, e)
+                return False
+        else:
+            rc, _ = run_system_command(['rm', '-f', filepath])
+            return True

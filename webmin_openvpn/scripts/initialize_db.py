@@ -109,6 +109,15 @@ def main(argv=sys.argv):
                     conn.commit()
             except Exception:
                 pass
+            try:
+                import sqlalchemy as sa
+                with engine.connect() as conn:
+                    conn.execute(sa.text(
+                        "ALTER TABLE openvpn ADD COLUMN IF NOT EXISTS "
+                        "ip_sumber VARCHAR(15);"))
+                    conn.commit()
+            except Exception:
+                pass
             setup_models(
                 dbsession,
                 admin_user=args.admin_user,

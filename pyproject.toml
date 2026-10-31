@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "webmin_openvpn"
-version = "1.3.0"
+version = "1.4.0"
 description = "OpenVPN Web Management with Pyramid and Ziggurat Foundations"
 readme = "README.rst"
 authors = [
@@ -45,6 +45,7 @@ testing = [
 [project.scripts]
 initialize_webmin_openvpn_db = "webmin_openvpn.scripts.initialize_db:main"
 vpn_check = 'webmin_openvpn.scripts.vpn_check:main'
+qrcode_otp = 'webmin_openvpn.scripts.qrcode_otp:main'
 
 [project.entry-points."paste.app_factory"]
 main = "webmin_openvpn:main"

@@ -1,3 +1,9 @@
+1.4.0 2026-10-26
+----------------
+- Tambah menu Firewall
+- Tambah field ip_sumber yang berisi IP publik VPN client
+- Tambah bin/qrcode_otp untuk membuat file gambar QR code
+
 1.3.0 2026-10-22
 ----------------
 - Label Proxy bisa di-klik untuk mengisi port yang diperkenankan 

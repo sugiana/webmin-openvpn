@@ -39,7 +39,8 @@
                             <tr>
                                 <th style="width: 50px;">#</th>
                                 <th>Username</th>
-                                <th>IP</th>
+                                <th>IP Sumber</th>
+                                <th>IP VPN</th>
                                 <th>Status</th>
                                 <th>Waktu Pembuatan</th>
                                 <th class="text-end" style="width: ${'330px' if show_proxy_option else '260px'};">Aksi</th>
@@ -73,6 +74,14 @@
                                             </div>
                                         </div>
                                     </div>
+                                </td>
+                                <td>
+                                    <span tal:condition="c.get('ip_sumber') and c['ip_sumber'] != '-'" class="badge bg-secondary-subtle text-secondary border border-secondary-subtle font-monospace px-2 py-1">
+                                        <i class="bi bi-box-arrow-in-right me-1"></i>${c['ip_sumber']}
+                                    </span>
+                                    <span tal:condition="not c.get('ip_sumber') or c['ip_sumber'] == '-'" class="text-muted small">
+                                        -
+                                    </span>
                                 </td>
                                 <td>
                                     <span tal:condition="c.get('ip') and c['ip'] != '-'" class="badge bg-info-subtle text-info border border-info-subtle font-monospace px-2 py-1">
@@ -126,7 +135,7 @@
                                 </td>
                             </tr>
                             <tr tal:condition="not clients">
-                                <td colspan="6" class="text-center py-5 text-muted">
+                                <td colspan="7" class="text-center py-5 text-muted">
                                     <i class="bi bi-folder2-open fs-1 d-block mb-2 text-secondary"></i>
                                     <span>Belum ada berkas sertifikat <code>.tgz</code> di direktori <code>${client_dir}</code>.</span>
                                 </td>

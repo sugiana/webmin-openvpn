@@ -52,8 +52,8 @@
                         </a>
                     </li>
                     <li class="nav-item">
-                        <a class="nav-link ${'active' if request.matched_route and request.matched_route.name == 'admin_change_password' else ''}" href="${request.route_url('admin_change_password')}">
-                            <i class="bi bi-key me-1"></i> Ubah Password
+                        <a class="nav-link ${'active' if request.matched_route and request.matched_route.name == 'admin_firewall' else ''}" href="${request.route_url('admin_firewall')}">
+                            <i class="bi bi-shield-lock me-1"></i> Firewall
                         </a>
                     </li>
                 </ul>

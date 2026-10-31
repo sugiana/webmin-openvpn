@@ -16,3 +16,4 @@ class VPN(Base):
     terhubung = Column(Boolean, nullable=False, server_default='false')
     perubahan = Column(
         DateTime(timezone=True), nullable=False, server_default=func.now())
+    ip_sumber = Column(String(15), nullable=False)

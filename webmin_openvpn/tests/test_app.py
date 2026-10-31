@@ -22,6 +22,13 @@ class TestWebminOpenVPN(unittest.TestCase):
     def setUpClass(cls):
         ini_path = os.path.abspath('test.ini')
         settings = get_appsettings(ini_path)
+        try:
+            import psycopg2
+            conn = psycopg2.connect(settings.get('sqlalchemy.url', ''))
+            conn.close()
+        except Exception:
+            settings['sqlalchemy.url'] = \
+                'postgresql://sugiana:a@/openvpn?host=/var/run/postgresql'
 
         # Setup isolated temp client dir with a test cert
         cls.test_client_dir = tempfile.mkdtemp()
@@ -41,6 +48,22 @@ class TestWebminOpenVPN(unittest.TestCase):
             f.write("sampleuser\n")
         settings['openvpn.proxy_file'] = cls.test_proxy_file
 
+        cls.test_blacklist_file = os.path.join(
+            cls.test_client_dir, 'blacklist')
+        cls.test_whitelist_file = os.path.join(
+            cls.test_client_dir, 'whitelist')
+        settings['openvpn.blacklist_file'] = cls.test_blacklist_file
+        settings['openvpn.whitelist_file'] = cls.test_whitelist_file
+
+        cls.test_firewall_cmd = os.path.join(
+            cls.test_client_dir, 'dummy_firewall.sh')
+        with open(cls.test_firewall_cmd, 'w') as f:
+            f.write(
+                "#!/bin/sh\necho 'Firewall dummy output: "
+                "rules applied'\nexit 0\n")
+        os.chmod(cls.test_firewall_cmd, 0o755)
+        settings['openvpn.firewall_cmd'] = cls.test_firewall_cmd
+
         cls.app = main({}, **settings)
         cls.engine = get_engine(settings)
         cls.session_factory = get_session_factory(cls.engine)
@@ -57,6 +80,8 @@ class TestWebminOpenVPN(unittest.TestCase):
         if admin and admin.totp_secret:
             admin.totp_secret = None
             self.dbsession.commit()
+        with open(self.test_proxy_file, 'w') as f:
+            f.write("sampleuser\n")
 
     def tearDown(self):
         admin = UserService.by_user_name('admin', db_session=self.dbsession)
@@ -113,7 +138,9 @@ class TestWebminOpenVPN(unittest.TestCase):
         self.assertIn('sampleuser', users_page.text)
         self.assertIn('<th>Waktu Pembuatan</th>', users_page.text)
         self.assertNotIn('<th>Berkas Sertifikat (.tgz)</th>', users_page.text)
-        self.assertIn('<th>IP</th>', users_page.text)
+        self.assertIn('<th>IP Sumber</th>', users_page.text)
+        self.assertIn('<th>IP VPN</th>', users_page.text)
+        self.assertNotIn('<th>IP</th>', users_page.text)
         self.assertNotIn('<th>Ukuran</th>', users_page.text)
         self.assertIn('10.8.41.99', users_page.text)
         self.assertIn('Proxy', users_page.text)
@@ -344,21 +371,30 @@ class TestWebminOpenVPN(unittest.TestCase):
         # None initially
         self.assertIsNone(get_proxy_user(tmp_proxy))
 
-        # Test set_proxy_user executes new-proxy-user command
+        # Test set_proxy_user saves to proxy.txt and executes firewall without
+        # arguments
         with patch('webmin_openvpn.utils.run_system_command') as mock_cmd:
             mock_cmd.return_value = (0, "Success")
-            res1 = set_proxy_user('karyoto')
+            # 1. Pilihan 1: username only
+            res1 = set_proxy_user('karyoto', proxy_file=tmp_proxy)
             self.assertTrue(res1)
-            mock_cmd.assert_called_with([
-                '/usr/local/bin/new-proxy-user', 'karyoto'])
-            res2 = set_proxy_user('husein')
+            with open(tmp_proxy, 'r') as f:
+                self.assertEqual(f.read().strip(), 'karyoto')
+            mock_cmd.assert_called_with(['/usr/local/bin/firewall'])
+
+            res2 = set_proxy_user('husein', proxy_file=tmp_proxy)
             self.assertTrue(res2)
-            mock_cmd.assert_called_with([
-                '/usr/local/bin/new-proxy-user', 'husein'])
-            res3 = set_proxy_user('sugiana', ports='7070,6543')
+            with open(tmp_proxy, 'r') as f:
+                self.assertEqual(f.read().strip(), 'husein')
+            mock_cmd.assert_called_with(['/usr/local/bin/firewall'])
+
+            # 2. Pilihan 2: username with ports
+            res3 = set_proxy_user(
+                'sugiana', ports='7070,6543', proxy_file=tmp_proxy)
             self.assertTrue(res3)
-            mock_cmd.assert_called_with([
-                '/usr/local/bin/new-proxy-user', 'sugiana', '7070,6543'])
+            with open(tmp_proxy, 'r') as f:
+                self.assertEqual(f.read().strip(), 'sugiana:7070,6543')
+            mock_cmd.assert_called_with(['/usr/local/bin/firewall'])
 
     def test_edit_and_change_password_min_length(self):
         """Test edit user password and change own password min 8 characters
@@ -490,6 +526,7 @@ class TestWebminOpenVPN(unittest.TestCase):
         admin_app.post(
             '/login', {'username': 'admin', 'password': 'admin'}, status=302)
 
+        self.assertTrue(os.path.exists(self.test_proxy_file))
         with patch('webmin_openvpn.views.admin.revoke_user') as mock_revoke:
             mock_revoke.return_value = (True, 'Revoked successfully')
             res = admin_app.post('/admin/users/sampleuser/revoke', {
@@ -501,6 +538,50 @@ class TestWebminOpenVPN(unittest.TestCase):
 
         followed = res.follow(status=200)
         self.assertIn('User "sampleuser" berhasil dihapus.', followed.text)
+        # Proxy file harus terhapus karena user di proxy.txt adalah sampleuser
+        self.assertFalse(os.path.exists(self.test_proxy_file))
+
+    def test_admin_revoke_user_keeps_proxy_file_for_different_user(self):
+        """When proxy.txt has a different user, revoking sampleuser must keep
+        proxy.txt intact."""
+        admin_app = webtest.TestApp(self.app)
+        admin_app.post(
+            '/login', {'username': 'admin', 'password': 'admin'}, status=302)
+
+        # Set proxy file to a different user
+        with open(self.test_proxy_file, 'w') as f:
+            f.write("otheruser:80,443\n")
+
+        with patch('webmin_openvpn.views.admin.revoke_user') as mock_revoke:
+            mock_revoke.return_value = (True, 'Revoked successfully')
+            res = admin_app.post('/admin/users/sampleuser/revoke', {
+                'confirm_text': 'Silakan hapus sampleuser',
+            }, status=302)
+            self.assertIn('/admin/users', res.location)
+
+        self.assertTrue(os.path.exists(self.test_proxy_file))
+        with open(self.test_proxy_file, 'r') as f:
+            content = f.read()
+        self.assertEqual(content.strip(), "otheruser:80,443")
+
+    def test_admin_revoke_user_with_ports_in_proxy_file(self):
+        """When proxy.txt has 'sampleuser:8080,9000', revoking sampleuser must
+        delete proxy.txt."""
+        admin_app = webtest.TestApp(self.app)
+        admin_app.post(
+            '/login', {'username': 'admin', 'password': 'admin'}, status=302)
+
+        with open(self.test_proxy_file, 'w') as f:
+            f.write("sampleuser:8080,9000\n")
+
+        with patch('webmin_openvpn.views.admin.revoke_user') as mock_revoke:
+            mock_revoke.return_value = (True, 'Revoked successfully')
+            res = admin_app.post('/admin/users/sampleuser/revoke', {
+                'confirm_text': 'Silakan hapus sampleuser',
+            }, status=302)
+            self.assertIn('/admin/users', res.location)
+
+        self.assertFalse(os.path.exists(self.test_proxy_file))
 
     def test_revoke_user_utils(self):
         """Test revoke_user utility function executing command and deleting
@@ -823,6 +904,7 @@ class TestWebminOpenVPN(unittest.TestCase):
             else:
                 vpn.ip = '10.8.41.99'
             vpn.terhubung = True
+            vpn.ip_sumber = '198.51.100.42'
             vpn.perubahan = datetime(2026, 10, 19, 14, 30, 0)
             db.commit()
             db.refresh(vpn)
@@ -834,6 +916,7 @@ class TestWebminOpenVPN(unittest.TestCase):
         self.assertIn('<th>Status</th>', res_on.text)
         self.assertIn('>ON</span>', res_on.text)
         self.assertIn(expected_time_on, res_on.text)
+        self.assertIn('198.51.100.42', res_on.text)
 
         # 2. When disconnected (OFF with red background)
         expected_time_off = None
@@ -910,61 +993,43 @@ class TestWebminOpenVPN(unittest.TestCase):
         self.assertIn('Hanya forward port tertentu', users_res.text)
         self.assertIn('id="reverseProxyPortsInput"', users_res.text)
 
-        # 2. Save custom ports: 6969,8081
-        def fake_set_proxy_custom(username, ports=None, **kwargs):
-            content = f"{username}:{ports}\n" if ports else f"{username}\n"
-            with open(self.test_proxy_file, 'w') as f:
-                f.write(content)
-            return True
+        # 2. Save custom ports: 6969,8081 (Pilihan 2)
+        post_custom = admin_app.post(
+            '/admin/users/proxy-ports',
+            {
+                'username': 'sampleuser',
+                'proxy_port_mode': 'custom',
+                'reverse_proxy_ports': '6969,8081',
+            },
+            status=302,
+        )
+        self.assertIn('/admin/users', post_custom.location)
+        users_after_custom = post_custom.follow(status=200)
+        self.assertIn('6969,8081', users_after_custom.text)
+        self.assertIn(
+            'font-monospace badge-proxy-clickable',
+            users_after_custom.text)
+        with open(self.test_proxy_file, 'r') as f:
+            self.assertEqual(f.read().strip(), 'sampleuser:6969,8081')
 
-        with patch(
-                'webmin_openvpn.views.admin.set_proxy_user',
-                side_effect=fake_set_proxy_custom):
-            post_custom = admin_app.post(
-                '/admin/users/proxy-ports',
-                {
-                    'username': 'sampleuser',
-                    'proxy_port_mode': 'custom',
-                    'reverse_proxy_ports': '6969,8081',
-                },
-                status=302,
-            )
-            self.assertIn('/admin/users', post_custom.location)
-            users_after_custom = post_custom.follow(status=200)
-            self.assertIn('6969,8081', users_after_custom.text)
-            self.assertIn(
-                'font-monospace badge-proxy-clickable',
-                users_after_custom.text)
-            with open(self.test_proxy_file, 'r') as f:
-                self.assertEqual(f.read().strip(), 'sampleuser:6969,8081')
-
-        # 3. Save all ports (pilihan 1): runs new-proxy-user sampleuser without
-        # ports
-        def fake_set_proxy_all(username, ports=None, **kwargs):
-            content = f"{username}\n"
-            with open(self.test_proxy_file, 'w') as f:
-                f.write(content)
-            return True
-
-        with patch(
-                'webmin_openvpn.views.admin.set_proxy_user',
-                side_effect=fake_set_proxy_all):
-            post_all = admin_app.post(
-                '/admin/users/proxy-ports',
-                {
-                    'username': 'sampleuser',
-                    'proxy_port_mode': 'all',
-                    'reverse_proxy_ports': '',
-                },
-                status=302,
-            )
-            self.assertIn('/admin/users', post_all.location)
-            users_after_all = post_all.follow(status=200)
-            self.assertIn(
-                'Pengaturan proxy untuk "sampleuser" berhasil disimpan',
-                users_after_all.text)
-            with open(self.test_proxy_file, 'r') as f:
-                self.assertEqual(f.read().strip(), 'sampleuser')
+        # 3. Save all ports (Pilihan 1): saves sampleuser to proxy.txt and runs
+        # firewall
+        post_all = admin_app.post(
+            '/admin/users/proxy-ports',
+            {
+                'username': 'sampleuser',
+                'proxy_port_mode': 'all',
+                'reverse_proxy_ports': '',
+            },
+            status=302,
+        )
+        self.assertIn('/admin/users', post_all.location)
+        users_after_all = post_all.follow(status=200)
+        self.assertIn(
+            'Pengaturan proxy untuk "sampleuser" berhasil disimpan',
+            users_after_all.text)
+        with open(self.test_proxy_file, 'r') as f:
+            self.assertEqual(f.read().strip(), 'sampleuser')
 
         # 4. Validation: Empty ports for custom mode
         post_empty = admin_app.post(
@@ -1008,3 +1073,98 @@ class TestWebminOpenVPN(unittest.TestCase):
         # 7. GET request redirects to /admin/users
         get_res = admin_app.get('/admin/users/proxy-ports', status=302)
         self.assertIn('/admin/users', get_res.location)
+
+    def test_firewall_top_nav_menu_and_change_password_removed(self):
+        """Top nav menu must have 'Firewall' and remove 'Ubah Password' from
+        top nav, while user dropdown list retains 'Ubah Password Saya'."""
+        admin_app = webtest.TestApp(self.app)
+        admin_app.post(
+            '/login', {'username': 'admin', 'password': 'admin'}, status=302)
+
+        res = admin_app.get('/admin', status=200)
+        # Top nav has Firewall link
+        self.assertIn('href="http://localhost/admin/firewall"', res.text)
+        self.assertIn('Firewall', res.text)
+        # Top nav does not have the removed top link
+        self.assertNotIn(
+            '<i class="bi bi-key me-1"></i> Ubah Password', res.text)
+        # User dropdown still has Ubah Password Saya
+        self.assertIn('Ubah Password Saya', res.text)
+        self.assertIn(
+            'href="http://localhost/admin/change-password"', res.text)
+
+    def test_admin_firewall_get_and_post_flows(self):
+        """Test GET and POST firewall rules (Blacklist & Whitelist) including
+        file creation, file removal when empty, and firewall script
+        execution."""
+        from webmin_openvpn.utils import validate_ip_list
+
+        # Test utils validation
+        valid, ips, err = validate_ip_list("192.168.1.1\n\n10.8.0.5\n")
+        self.assertTrue(valid)
+        self.assertEqual(ips, ['192.168.1.1', '10.8.0.5'])
+
+        valid_empty, empty_ips, _ = validate_ip_list("   \n\n  ")
+        self.assertTrue(valid_empty)
+        self.assertEqual(empty_ips, [])
+
+        invalid, _, err_msg = validate_ip_list("192.168.1.1\n999.0.0.1")
+        self.assertFalse(invalid)
+        self.assertIn('bukan alamat IPv4 yang valid', err_msg)
+
+        admin_app = webtest.TestApp(self.app)
+        admin_app.post(
+            '/login', {'username': 'admin', 'password': 'admin'}, status=302)
+
+        # 1. GET /admin/firewall
+        fw_page = admin_app.get('/admin/firewall', status=200)
+        self.assertIn('Pengaturan Firewall', fw_page.text)
+        self.assertIn('Blacklist', fw_page.text)
+        self.assertIn('Whitelist', fw_page.text)
+
+        # 2. POST with valid Blacklist and Whitelist
+        post_res = admin_app.post('/admin/firewall', {
+            'blacklist': "10.0.0.99\n192.168.1.200",
+            'whitelist': "1.1.1.1\n\n8.8.8.8",
+        }, status=200)
+        self.assertIn(
+            'Pengaturan firewall berhasil disimpan dan diterapkan',
+            post_res.text)
+        self.assertIn('Firewall dummy output: rules applied', post_res.text)
+
+        # Verify files were created with correct IPs
+        self.assertTrue(os.path.exists(self.test_blacklist_file))
+        self.assertTrue(os.path.exists(self.test_whitelist_file))
+        with open(self.test_blacklist_file, 'r') as f:
+            self.assertEqual(f.read(), "10.0.0.99\n192.168.1.200\n")
+        with open(self.test_whitelist_file, 'r') as f:
+            self.assertEqual(f.read(), "1.1.1.1\n8.8.8.8\n")
+
+        # 3. POST with empty Blacklist and empty Whitelist -> files must be
+        # removed
+        post_empty = admin_app.post('/admin/firewall', {
+            'blacklist': "\n   \n",
+            'whitelist': "",
+        }, status=200)
+        self.assertIn(
+            'Pengaturan firewall berhasil disimpan dan diterapkan',
+            post_empty.text)
+        self.assertFalse(os.path.exists(self.test_blacklist_file))
+        self.assertFalse(os.path.exists(self.test_whitelist_file))
+
+        # 4. POST with invalid IPv4 in Blacklist
+        post_invalid_b = admin_app.post('/admin/firewall', {
+            'blacklist': "not-an-ip",
+            'whitelist': "",
+        }, status=200)
+        self.assertIn('bukan alamat IPv4 yang valid', post_invalid_b.text)
+        self.assertFalse(os.path.exists(self.test_blacklist_file))
+
+        # 5. POST with invalid IPv4 in Whitelist
+        post_invalid_w = admin_app.post('/admin/firewall', {
+            'blacklist': "",
+            'whitelist': "10.0.0.1/24",
+        }, status=200)
+        self.assertIn('bukan alamat IPv4 yang valid', post_invalid_w.text)
+        self.assertFalse(
+            os.path.exists(self.test_whitelist_file))
