@@ -1,3 +1,9 @@
+1.5.0 2026-11-18
+----------------
+- Di menu Firewall kini whitelist atau blacklist atau tidak keduanya
+- Penggunaan ipset untuk menyimpan whitelist dan blacklist
+- Nama 2FA diatur di file konfigurasi
+
 1.4.0 2026-10-26
 ----------------
 - Tambah menu Firewall

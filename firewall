@@ -2,19 +2,36 @@
 
 # Ketentuan:
 # 1. Semua boleh akses port 22, 80, 443, dan 1194
-# 2. Blacklist: bila diisi maka IP-nya dicekal
-# 3. Whitelist: bila diisi maka hanya IP ini yang boleh, bila kosong maka
-#    seluruh IP boleh kecuali yang di blacklist
+# 2. Whitelist didahulukan
+# 3. Bila whitelist tidak ada maka terapkan blacklist
+# 4. Bila tidak ada keduanya maka semua boleh
 
 
 IP_FILE="/var/log/openvpn/ipp.txt"
 PROXY_FILE="/var/log/openvpn/proxy.txt"
-BLACKLIST_FILE="/etc/iptables/blacklist"
-WHITELIST_FILE="/etc/iptables/whitelist"
-ALWAYS_PORTS="22,80,443,1194"
+SERVER_PORTS="22,80,443,1194"
 VPN_IP=$1
-PORTS=""
+VPN_PORTS=""
 IS_CHANGED=""
+
+
+if ! ipset list whitelist >/dev/null 2>&1; then
+    ipset create whitelist hash:ip
+fi
+
+if ! ipset list blacklist >/dev/null 2>&1; then
+    ipset create blacklist hash:ip
+fi
+
+
+get_blacklist() {
+    ipset list blacklist | sed -n '/Members/,$p' | tail -n +2 | tr '\n' ' '
+}
+
+
+get_whitelist() {
+    ipset list whitelist | sed -n '/Members/,$p' | tail -n +2 | tr '\n' ' '
+}
 
 
 run() {
@@ -25,9 +42,12 @@ run() {
 }
  
 
+whitelist_ips=$(get_whitelist)
+blacklist_ips=$(get_blacklist)
+
 if [ -f "$PROXY_FILE" ]; then
     user=$(cat $PROXY_FILE | awk -F':' '{print $1}')
-    PORTS=$(cat $PROXY_FILE | awk -F':' '{print $2}')
+    VPN_PORTS=$(cat $PROXY_FILE | awk -F':' '{print $2}')
     if [ -z "$VPN_IP" ] && [ -f $IP_FILE ]; then
         user_ip=$(grep ^$user, $IP_FILE)
         if [ -n "$user_ip" ]; then
@@ -36,17 +56,35 @@ if [ -f "$PROXY_FILE" ]; then
     fi
 fi
 
+line=$(iptables -t nat -S PREROUTING | grep -e "-j DNAT" | head -n 1)
+if [ -n "$line" ]; then
+    PUBLIC_IP=$(grep -oP '(?<=-d )[0-9.]+' <<< "$line")
+else
+    echo "Dapatkan IP publik ..."
+    cmd="curl -s -4 ifconfig.me"
+    echo "  $cmd"
+    PUBLIC_IP=$(eval $cmd) || exit 1
+    echo "    $PUBLIC_IP"
+fi
+
 
 reject_proxy() {
     if [ -f "$PROXY_FILE" ]; then
         while IFS= read -r line; do
-            echo "Hapus aturan semua boleh proxy karena ada file $PROXY_FILE ..."
+            echo "Hapus proxy untuk semua karena ada file $PROXY_FILE ..."
             run "${line/#-A/iptables -t nat -D}"
         done < <(iptables -t nat -S POSTROUTING | grep -e "POSTROUTING -j MASQUERADE") || exit 1
+        while IFS= read -r line; do
+            ip=$(grep -oP '(?<=-s )[0-9.]+' <<< "$line")
+            if [ "$ip" = "$VPN_IP" ]; then
+                continue
+            fi
+            echo "Hapus proxy untuk $ip karena tidak terdaftar di file $PROXY_FILE ..."
+            run "${line/#-A/iptables -t nat -D}"
+        done < <(iptables -t nat -S POSTROUTING | grep -e "-s ")
     else
         while IFS= read -r line; do
-            ip=$(echo "$line" | awk '{print $4}' | awk -F"/" '{print $1}')
-            echo "Hapus aturan proxy $ip karena semua boleh, tidak ada file $PROXY_FILE ..."
+            echo "Hapus proxy karena semua boleh, tidak ada file $PROXY_FILE ..."
             run "${line/#-A/iptables -t nat -D}"
         done < <(iptables -t nat -S POSTROUTING | grep -e "-j MASQUERADE" | grep -e "-s ") || exit 1
     fi
@@ -56,12 +94,12 @@ reject_proxy() {
 allow_proxy() {
     if [ -n "$VPN_IP" ]; then
         if ! iptables -t nat -C POSTROUTING -j MASQUERADE -s $VPN_IP >/dev/null 2>&1; then
-            echo "Izinkan $VPN_IP akses Internet (proxy) ..."
+            echo "Tambahkan proxy untuk $VPN_IP ..."
             run "iptables -t nat -A POSTROUTING -j MASQUERADE -s $VPN_IP"
         fi
     else
         if ! iptables -t nat -C POSTROUTING -j MASQUERADE >/dev/null 2>&1; then
-            echo "Izinkan semua akses Internet (proxy) ..."
+            echo "Tambahkan proxy untuk semua ..."
             run "iptables -t nat -A POSTROUTING -j MASQUERADE"
         fi
     fi
@@ -74,64 +112,71 @@ proxy() {
 }
 
 
-unused_reject_reverse_proxy() {
-    while IFS= read -r line; do
-        if echo "$line" | grep $ALWAYS_PORTS >/dev/null 2>&1; then
-            local dports=""
-        else
-            local dports=$(grep -oP '(?<=--dports )[0-9,]+' <<< "$line")
-        fi
-        if [ ! "$dports" = "$PORTS" ]; then
-            if [ -n "$dports" ]; then
-                echo "Hapus aturan reverse proxy lama port $dports ..."
-            else
-                echo "Hapus aturan reverse proxy lama ..."
-            fi
-            run "${line/#-A/iptables -t nat -D}"
-            continue
-        fi
-        # Whitelist rule ?
-        if [[ "$line" == *"-s "* ]]; then
-            local src_ip=$(echo "$line" | awk '{print $4}' | awk -F"/" '{print $1}')
-            if grep $src_ip $WHITELIST_FILE >/dev/null 2>&1; then
-                continue
-            fi
-            echo "Hapus aturan reverse proxy lama karena $src_ip tidak ada di $WHITELIST_FILE ..."
-            run "${line/#-A/iptables -t nat -D}"
-        fi
-    done < <(iptables -t nat -S PREROUTING | grep -e "-j DNAT") || exit 1
-}
-
 reject_reverse_proxy() {
     while IFS= read -r line; do
-        if echo "$line" | grep $ALWAYS_PORTS >/dev/null 2>&1; then
+        if [ -z "$VPN_IP" ]; then
+            echo "Hapus reverse proxy karena tidak ada penetapan IP VPN-nya ..."
+            run "${line/#-A/iptables -t nat -D}"
+            continue
+        fi
+        local ip=$(grep -oP '(?<=--to-destination )[0-9.]+' <<< "$line")
+        if [ ! "$ip" = "$VPN_IP" ]; then
+            echo "Hapus reverse proxy ke $ip karena tidak terdaftar di file $PROXY_FILE ..."
+            run "${line/#-A/iptables -t nat -D}"
+            continue
+        fi
+        if [ -n "$whitelist_ips" ]; then
+            if ! echo "$line" | grep whitelist >/dev/null 2>&1; then
+                echo "Hapus reverse proxy karena tidak ada kata whitelist ..."
+                run "${line/#-A/iptables -t nat -D}"
+                continue
+            fi
+        else
+            if [ -n "$blacklist_ips" ]; then
+                if ! echo "$line" | grep blacklist >/dev/null 2>&1; then
+                    echo "Hapus reverse proxy karena tidak ada kata blacklist ..."
+                    run "${line/#-A/iptables -t nat -D}"
+                    continue
+                fi
+            fi
+        fi
+        if [ -z "$whitelist_ips" ] && [ -z "$blacklist_ips" ]; then
+            local found_whitelist=$(echo "$line" | grep whitelist)
+            local found_blacklist=$(echo "$line" | grep blacklist)
+            if [ -n "$found_whitelist" ] || [ -n "$found_blacklist" ]; then
+                echo "Hapus reverse proxy karena tidak ada lagi penetapan whitelist maupun blacklist ..."
+                run "${line/#-A/iptables -t nat -D}"
+                continue
+            fi
+        fi
+        if [ -n "$VPN_PORTS" ]; then
+            if echo "$line" | grep $SERVER_PORTS >/dev/null 2>&1; then
+                echo "Hapus reverse proxy karena ada penetapan port menjadi $VPN_PORTS ..."
+                run "${line/#-A/iptables -t nat -D}"
+                continue
+            fi
+        fi
+        if echo "$line" | grep $SERVER_PORTS >/dev/null 2>&1; then
             local dports=""
         else
             local dports=$(grep -oP '(?<=--dports )[0-9,]+' <<< "$line")
         fi
-        if [ ! "$dports" = "$PORTS" ]; then
-            if [ -n "$dports" ]; then
-                echo "Hapus aturan reverse proxy lama port karena perubahan port $dports menjadi $PORTS ..."
-            else
-                echo "Hapus aturan reverse proxy lama karena perubahan port dari kosong menjadi $PORTS  ..."
-            fi
-            run "${line/#-A/iptables -t nat -D}"
+        if [ "$dports" = "$VPN_PORTS" ]; then
             continue
         fi
-        # Whitelist rule ?
-        if [[ "$line" == *"-s "* ]]; then
-            local src_ip=$(echo "$line" | awk '{print $4}' | awk -F"/" '{print $1}')
-            if grep $src_ip $WHITELIST_FILE >/dev/null 2>&1; then
+        if [ -n "$VPN_PORTS" ]; then
+            if [ -n "$dports" ]; then
+                echo "Hapus reverse proxy karena perubahan port $dports menjadi $VPN_PORTS ..."
+                run "${line/#-A/iptables -t nat -D}"
                 continue
             fi
-            echo "Hapus aturan reverse proxy lama karena $src_ip tidak ada di $WHITELIST_FILE ..."
-            run "${line/#-A/iptables -t nat -D}"
-        else
-            if [ -f $WHITELIST_FILE ]; then
-                echo "Hapus aturan reverse proxy lama karena tidak ada file $WHITELIST_FILE ..."
-                run "${line/#-A/iptables -t nat -D}"
-            fi
         fi
+        if [ -n "$dports" ]; then
+            echo "Hapus reverse proxy karena kini boleh ke semua port ..."
+        else
+            echo "Hapus reverse proxy ..."
+        fi
+        run "${line/#-A/iptables -t nat -D}"
     done < <(iptables -t nat -S PREROUTING | grep -e "-j DNAT") || exit 1
 }
 
@@ -140,40 +185,42 @@ allow_reverse_proxy() {
     if [ -z "$VPN_IP" ]; then
         return 0
     fi
-    line=$(iptables -t nat -S PREROUTING | grep -e "-j DNAT" | head -n 1)
-    if [ -n "$line" ]; then
-        local public_ip=$(grep -oP '(?<=-d )[0-9.]+' <<< "$line")
-    else
-        echo "Dapatkan IP publik ..."
-        cmd="curl -s -4 ifconfig.me"
-        echo "  $cmd"
-        local public_ip=$(eval $cmd) || exit 1
-        echo "    $public_ip"
-    fi
-    if [ -f $WHITELIST_FILE ]; then
-        for src_ip in $(cat $WHITELIST_FILE); do
-            if [ -n "$PORTS" ]; then
-                if ! iptables -t nat -C PREROUTING -p tcp -s $src_ip -d $public_ip -m multiport --dports $PORTS -j DNAT --to-destination $VPN_IP >/dev/null 2>&1; then
-                    echo "Tambahkan reverse proxy dari $src_ip ke $VPN_IP port $PORTS ..."
-                    run "iptables -t nat -A PREROUTING -p tcp -s $src_ip -d $public_ip -m multiport --dports $PORTS -j DNAT --to-destination $VPN_IP"
-                fi
-            else
-                if ! iptables -t nat -C PREROUTING -p tcp -s $src_ip -d $public_ip -m multiport ! --dports $ALWAYS_PORTS -j DNAT --to-destination $VPN_IP >/dev/null 2>&1; then
-                    echo "Tambahkan reverse proxy dari $src_ip ke $VPN_IP kecuali port $ALWAYS_PORTS ..."
-                    run "iptables -t nat -A PREROUTING -p tcp -s $src_ip -d $public_ip -m multiport ! --dports $ALWAYS_PORTS -j DNAT --to-destination $VPN_IP"
-                fi
-            fi
-        done
-    else
-        if [ -n "$PORTS" ]; then
-            if ! iptables -t nat -C PREROUTING -p tcp -d $public_ip -m multiport --dports $PORTS -j DNAT --to-destination $VPN_IP >/dev/null 2>&1; then
-                echo "Tambahkan reverse proxy ke $VPN_IP port $PORTS ..." 
-                run "iptables -t nat -A PREROUTING -p tcp -d $public_ip -m multiport --dports $PORTS -j DNAT --to-destination $VPN_IP"
+    if [ -n "$VPN_PORTS" ]; then
+        if [ -n "$whitelist_ips" ]; then
+            if ! iptables -t nat -C PREROUTING -p tcp -m set --match-set whitelist src -d $PUBLIC_IP -m multiport --dports $VPN_PORTS -j DNAT --to-destination $VPN_IP >/dev/null 2>&1; then
+                echo "Tambahkan reverse proxy ke $VPN_IP port $VPN_PORTS khusus untuk $whitelist_ips ..."
+                run "iptables -t nat -I PREROUTING -p tcp -m set --match-set whitelist src -d $PUBLIC_IP -m multiport --dports $VPN_PORTS -j DNAT --to-destination $VPN_IP"
             fi
         else
-            if ! iptables -t nat -C PREROUTING -p tcp -d $public_ip -m multiport ! --dports $ALWAYS_PORTS -j DNAT --to-destination $VPN_IP >/dev/null 2>&1; then
-                echo "Tambahkan reverse proxy ke $VPN_IP kecuali port $ALWAYS_PORTS ..." 
-                run "iptables -t nat -A PREROUTING -p tcp -d $public_ip -m multiport ! --dports $ALWAYS_PORTS -j DNAT --to-destination $VPN_IP"
+            if [ -n "$blacklist_ips" ]; then
+                if ! iptables -t nat -C PREROUTING -p tcp -m set ! --match-set blacklist src -d $PUBLIC_IP -m multiport --dports $VPN_PORTS -j DNAT --to-destination $VPN_IP >/dev/null 2>&1; then
+                    echo "Tambahkan reverse proxy ke $VPN_IP port $VPN_PORTS kecuali untuk $blacklist_ips ..." 
+                    run "iptables -t nat -I PREROUTING -p tcp -m set ! --match-set blacklist src -d $PUBLIC_IP -m multiport --dports $VPN_PORTS -j DNAT --to-destination $VPN_IP"
+                fi
+            else
+                if ! iptables -t nat -C PREROUTING -p tcp -d $PUBLIC_IP -m multiport --dports $VPN_PORTS -j DNAT --to-destination $VPN_IP >/dev/null 2>&1; then
+                    echo "Tambahkan reverse proxy ke $VPN_IP port $VPN_PORTS ..." 
+                    run "iptables -t nat -I PREROUTING -p tcp -d $PUBLIC_IP -m multiport --dports $VPN_PORTS -j DNAT --to-destination $VPN_IP"
+                fi
+            fi
+        fi
+    else
+        if [ -n "$whitelist_ips" ]; then
+            if ! iptables -t nat -C PREROUTING -p tcp -m set --match-set whitelist src -d $PUBLIC_IP -m multiport ! --dports $SERVER_PORTS -j DNAT --to-destination $VPN_IP >/dev/null 2>&1; then
+                echo "Tambahkan reverse proxy ke $VPN_IP khusus untuk $whitelist_ips ..."
+                run "iptables -t nat -I PREROUTING -p tcp -m set --match-set whitelist src -d $PUBLIC_IP -m multiport ! --dports $SERVER_PORTS -j DNAT --to-destination $VPN_IP"
+            fi
+        else
+            if [ -n "$blacklist_ips" ]; then
+                if ! iptables -t nat -C PREROUTING -p tcp -m set ! --match-set blacklist src -d $PUBLIC_IP -m multiport ! --dports $SERVER_PORTS -j DNAT --to-destination $VPN_IP >/dev/null 2>&1; then
+                    echo "Tambahkan reverse proxy ke $VPN_IP kecuali untuk $blacklist_ips ..."
+                    run "iptables -t nat -I PREROUTING -p tcp -m set ! --match-set blacklist src -d $PUBLIC_IP -m multiport ! --dports $SERVER_PORTS -j DNAT --to-destination $VPN_IP"
+                fi
+            else
+                if ! iptables -t nat -C PREROUTING -p tcp -d $PUBLIC_IP -m multiport ! --dports $SERVER_PORTS -j DNAT --to-destination $VPN_IP >/dev/null 2>&1; then
+                    echo "Tambahkan reverse proxy ke $VPN_IP ..."
+                    run "iptables -t nat -I PREROUTING -p tcp -d $PUBLIC_IP -m multiport ! --dports $SERVER_PORTS -j DNAT --to-destination $VPN_IP"
+                fi
             fi
         fi
     fi
@@ -186,101 +233,12 @@ reverse_proxy() {
 }
 
 
-allow_vpn() {
-    urutan=$(iptables -S INPUT | nl | grep -e "-m multiport --dports $ALWAYS_PORTS" | awk '{print $1}' | tail -n 1)
-    if (( urutan > 2 )); then
-        echo "Hapus dulu aturan akses port 1194 tcp karena bukan di awal ..."
-        while IFS= read -r line; do
-            run "${line/#-A/iptables -D}"
-        done < <(iptables -S INPUT | grep -e "-m multiport --dports $ALWAYS_PORTS") || exit 1
-    else
-        if (( urutan > 0 )); then
-            return
-        fi
-    fi
-    echo "Izinkan semua akses port 1194 tcp ..."
-    run "iptables -I INPUT -p tcp -m multiport --dports $ALWAYS_PORTS -j ACCEPT"
-}
-
-
-blacklist() {
-    if [ -f $BLACKLIST_FILE ]; then
-        while IFS= read -r line; do
-            src_ip=$(echo "$line" | awk '{print $4}' | awk -F"/" '{print $1}')
-            if grep $src_ip $BLACKLIST_FILE >/dev/null 2>&1; then
-                continue
-            fi
-            echo "Hapus $src_ip dari blacklist karena tidak ada di $BLACKLIST_FILE ..."
-            run "${line/#-A/iptables -t nat -D}"
-        done < <(iptables -S INPUT | grep -e "-j DROP" | grep -e "-s ") || exit 1
-        for src_ip in $(cat $BLACKLIST_FILE); do
-            if iptables -C INPUT -s $src_ip -j DROP >/dev/null 2>&1; then
-                continue
-            fi
-            echo "Cekal $src_ip karena terdaftar di $BLACKLIST_FILE ..."
-            run "iptables -I INPUT -s $src_ip -j DROP"
-        done
-    else
-        while IFS= read -r line; do
-            src_ip=$(echo "$line" | awk '{print $4}' | awk -F"/" '{print $1}')
-            echo "Hapus pencekalan $src_ip karena file $BLACKLIST_FILE tidak ada ..."
-            run "${line/#-A/iptables -D}"
-        done < <(iptables -S INPUT | grep -e "-j DROP" | grep -e "-s ") || exit 1
-    fi
-}
-
-
-whitelist() {
-    local dev_gw=$(ip route | grep ^default | awk '{print $5}')
-    local ip_dev=$(ip -4 a show $dev_gw | grep "inet " | awk '{print $2}' | awk -F"/" '{print $1}')
-    if [ -f $WHITELIST_FILE ]; then
-        while IFS= read -r line; do
-            src_ip=$(echo "$line" | awk '{print $4}' | awk -F"/" '{print $1}')
-            if grep $src_ip $WHITELIST_FILE >/dev/null 2>&1; then
-                continue
-            fi
-            echo "Hapus $src_ip dari whitelist karena tidak terdaftar di $WHITELIST_FILE ..."
-            run "${line/#-A/iptables -D}"
-        done < <(iptables -S INPUT | grep -e "-j ACCEPT" | grep -e "-s ") || exit 1
-        if ! iptables -C INPUT -m conntrack --ctstate RELATED,ESTABLISHED ! --ctorigdst $ip_dev --ctstatus SEEN_REPLY -j ACCEPT >/dev/null 2>&1; then
-            echo "Izinkan arus balasan, dibutuhkan saat menjadi client ..."
-            run "iptables -I INPUT -m conntrack --ctstate RELATED,ESTABLISHED ! --ctorigdst $ip_dev --ctstatus SEEN_REPLY -j ACCEPT"
-        fi
-        for src_ip in $(cat $WHITELIST_FILE); do
-            if ! iptables -C INPUT -s $src_ip -j ACCEPT >/dev/null 2>&1; then
-                echo "Izinkan $src_ip karena terdaftar di $WHITELIST_FILE ..."
-                run "iptables -A INPUT -s $src_ip -j ACCEPT"
-            fi
-        done
-        if ! iptables -C INPUT -i $dev_gw -j DROP >/dev/null 2>&1; then
-            echo "Cekal semua ..."
-            run "iptables -A INPUT -i $dev_gw -j DROP"
-        fi
-    else
-        if iptables -C INPUT -i $dev_gw -j DROP >/dev/null 2>&1; then
-            echo "Semua diizinkan karena file $WHITELIST_FILE tidak ada kecuali yang di $BLACKLIST_FILE ..."
-            run "iptables -D INPUT -i $dev_gw -j DROP"
-        fi
-        if iptables -C INPUT -m conntrack --ctstate RELATED,ESTABLISHED ! --ctorigdst $ip_dev --ctstatus SEEN_REPLY -j ACCEPT >/dev/null 2>&1; then
-            echo "Tidak perlu lagi izin arus balasan karena file $WHITELIST_FILE tidak ada ..."
-            run "iptables -D INPUT -m conntrack --ctstate RELATED,ESTABLISHED ! --ctorigdst $ip_dev --ctstatus SEEN_REPLY -j ACCEPT"
-        fi
-        for src_ip in $(iptables -S INPUT | grep -e '-j ACCEPT' | grep -e '-s ' | awk '{print $4}' | awk -F"/" '{print $1}'); do
-            echo "Tidak perlu lagi whitelist $src_ip karena file $WHITELIST_FILE tidak ada ..."
-            run "iptables -D INPUT -s $src_ip -j ACCEPT"
-        done
-    fi
-}
-
-
 proxy
 reverse_proxy
-blacklist
-whitelist
-allow_vpn
 
 
 if [ -n "$IS_CHANGED" ]; then
     echo "Simpan ..."
     run "iptables-save > /etc/iptables/rules.v4"
+
 fi

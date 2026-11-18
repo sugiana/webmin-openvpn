@@ -124,10 +124,33 @@ def main(argv=sys.argv):
                 admin_pass=args.admin_pass,
                 admin_email=args.admin_email,
             )
+            print("Creating firewall ipsets (whitelist & blacklist)...")
+            setup_ipset()
             print("Database initialization complete!")
     except Exception as e:
         print(f"Error during initialization: {e}", file=sys.stderr)
         raise
+
+
+def setup_ipset():
+    """
+    Pembuatan himpunan whitelist dan blacklist:
+    ipset create whitelist hash:ip
+    ipset create blacklist hash:ip
+    """
+    from ..utils import run_system_command
+
+    for name in ['whitelist', 'blacklist']:
+        print(f"Creating ipset: {name}")
+        rc, out = run_system_command([
+            'ipset', 'create', name, 'hash:ip', '-exist'])
+        if rc != 0 and 'already exists' not in (out or ''):
+            rc2, out2 = run_system_command([
+                'ipset', 'create', name, 'hash:ip'])
+            if rc2 != 0 and 'already exists' not in (out2 or ''):
+                print(
+                    f"Warning: Failed to create ipset {name}: {out2}",
+                    file=sys.stderr)
 
 
 if __name__ == '__main__':

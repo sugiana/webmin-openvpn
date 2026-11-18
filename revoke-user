@@ -16,4 +16,9 @@ if [ -z "$found" ]; then
     echo crl-verify /etc/openvpn/server/easyrsa3-ca/pki/crl.pem >> /etc/openvpn/server.conf
 fi
 
+user_shell=$(getent passwd "$username" | awk -F: '{print $7}')
+if [ "$user_shell" = "/bin/false" ]; then
+    userdel -r "$username"
+fi
+
 systemctl restart openvpn@server

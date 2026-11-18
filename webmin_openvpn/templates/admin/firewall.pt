@@ -10,7 +10,7 @@
                 <h2 class="fw-bold text-dark mb-1">
                     <i class="bi bi-shield-lock-fill text-primary me-2"></i>Pengaturan Firewall
                 </h2>
-                <p class="text-muted mb-0">Kelola daftar Blacklist dan Whitelist alamat IP untuk aturan keamanan firewall server.</p>
+                <p class="text-muted mb-0">Kelola aturan keamanan IP menggunakan himpunan <code>ipset</code> (Whitelist atau Blacklist).</p>
             </div>
             <div class="d-flex gap-2">
                 <a href="${request.route_url('admin_dashboard')}" class="btn btn-outline-secondary rounded-3">
@@ -29,9 +29,10 @@
                     <div class="small">
                         <div class="fw-bold text-dark mb-1">Ketentuan Aturan Firewall:</div>
                         <ul class="mb-0 ps-3 text-secondary">
-                            <li><strong>Blacklist:</strong> Bila diisi, IP yang terdaftar akan dicekal (<code>DROP</code>). Bila dikosongkan, berkas akan dihapus dan semua pencekalan dicabut.</li>
-                            <li><strong>Whitelist:</strong> Bila diisi, <em>hanya</em> IP yang terdaftar yang diizinkan (<code>ACCEPT</code>) dan seluruh IP lainnya dicekal. Bila dikosongkan, berkas akan dihapus sehingga seluruh IP diperbolehkan (kecuali yang ada di Blacklist).</li>
-                            <li><strong>Format Isian:</strong> Setiap baris harus berisi satu alamat IPv4 yang valid atau kosong sepenuhnya.</li>
+                            <li><strong>Whitelist:</strong> Bila dipilih, <em>hanya</em> IP yang terdaftar yang diizinkan (<code>ACCEPT</code>) dan seluruh IP lainnya dicekal.</li>
+                            <li><strong>Blacklist:</strong> Bila dipilih, IP yang terdaftar akan dicekal (<code>DROP</code>) dan seluruh IP lainnya diizinkan.</li>
+                            <li><strong>Penyimpanan:</strong> Saat disimpan, sistem akan mengosongkan <code>whitelist</code> &amp; <code>blacklist</code>, menambahkan setiap IP ke himpunan terpilih (<code>ipset add</code>), menjalankan <code>netfilter-persistent save</code>, lalu diakhiri dengan eksekusi <code>/usr/local/bin/firewall</code>.</li>
+                            <li><strong>Format Isian:</strong> Setiap baris harus berisi satu alamat IPv4 yang valid atau dikosongkan jika tidak ada IP yang ingin didaftarkan.</li>
                         </ul>
                     </div>
                 </div>
@@ -40,84 +41,62 @@
 
         <!-- Firewall Form -->
         <form method="POST" action="${request.route_url('admin_firewall')}" id="firewallForm">
-            <div class="row g-4 mb-4">
-                <!-- Blacklist Card -->
-                <div class="col-12 col-lg-6">
-                    <div class="card shadow-sm border-0 rounded-4 h-100">
-                        <div class="card-header bg-white border-0 pt-4 px-4 pb-2 d-flex justify-content-between align-items-center">
-                            <div class="d-flex align-items-center gap-2">
-                                <span class="bg-danger-subtle text-danger rounded-3 p-2 d-inline-flex align-items-center justify-content-center">
-                                    <i class="bi bi-slash-circle fs-5"></i>
-                                </span>
-                                <div>
-                                    <h5 class="fw-bold mb-0 text-dark">Blacklist</h5>
-                                    <span class="text-muted small"><code>${blacklist_file}</code></span>
-                                </div>
-                            </div>
-                            <span class="badge bg-danger-subtle text-danger border border-danger-subtle font-monospace px-2 py-1">DROP</span>
-                        </div>
-                        <div class="card-body px-4 py-3">
-                            <label for="blacklist" class="form-label fw-semibold text-secondary small mb-2">
-                                DAFTAR IP DIBLOKIR (SATU IP PER BARIS)
-                            </label>
-                            <textarea 
-                                class="form-control font-monospace bg-light border rounded-3 p-3" 
-                                id="blacklist" 
-                                name="blacklist" 
-                                rows="12" 
-                                placeholder="Contoh:&#10;192.168.1.100&#10;10.8.0.50&#10;203.0.113.15"
-                                spellcheck="false"
-                            >${blacklist}</textarea>
-                            <div class="invalid-feedback" id="blacklistFeedback"></div>
-                            <div class="form-text small text-muted mt-2">
-                                Kosongkan kotak di atas jika ingin menghapus seluruh daftar blacklist.
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Whitelist Card -->
-                <div class="col-12 col-lg-6">
-                    <div class="card shadow-sm border-0 rounded-4 h-100">
-                        <div class="card-header bg-white border-0 pt-4 px-4 pb-2 d-flex justify-content-between align-items-center">
-                            <div class="d-flex align-items-center gap-2">
-                                <span class="bg-success-subtle text-success rounded-3 p-2 d-inline-flex align-items-center justify-content-center">
-                                    <i class="bi bi-check-circle fs-5"></i>
-                                </span>
-                                <div>
-                                    <h5 class="fw-bold mb-0 text-dark">Whitelist</h5>
-                                    <span class="text-muted small"><code>${whitelist_file}</code></span>
-                                </div>
-                            </div>
-                            <span class="badge bg-success-subtle text-success border border-success-subtle font-monospace px-2 py-1">ACCEPT</span>
-                        </div>
-                        <div class="card-body px-4 py-3">
-                            <label for="whitelist" class="form-label fw-semibold text-secondary small mb-2">
-                                DAFTAR IP DIIZINKAN (SATU IP PER BARIS)
-                            </label>
-                            <textarea 
-                                class="form-control font-monospace bg-light border rounded-3 p-3" 
-                                id="whitelist" 
-                                name="whitelist" 
-                                rows="12" 
-                                placeholder="Contoh:&#10;192.168.1.10&#10;10.8.0.1&#10;198.51.100.2"
-                                spellcheck="false"
-                            >${whitelist}</textarea>
-                            <div class="invalid-feedback" id="whitelistFeedback"></div>
-                            <div class="form-text small text-muted mt-2">
-                                Kosongkan kotak di atas jika ingin mengizinkan seluruh IP publik (default).
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Submit Button & Action Bar -->
             <div class="card shadow-sm border-0 rounded-4 mb-4">
-                <div class="card-body p-4 d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-3">
+                <div class="card-header bg-white border-0 pt-4 px-4 pb-2 d-flex justify-content-between align-items-center">
+                    <div class="d-flex align-items-center gap-2">
+                        <span id="modeIconContainer" class="rounded-3 p-2 d-inline-flex align-items-center justify-content-center ${'bg-success-subtle text-success' if mode == 'whitelist' else 'bg-danger-subtle text-danger'}">
+                            <i id="modeIcon" class="bi ${'bi-check-circle' if mode == 'whitelist' else 'bi-slash-circle'} fs-5"></i>
+                        </span>
+                        <div>
+                            <h5 class="fw-bold mb-0 text-dark">Konfigurasi Aturan IP</h5>
+                            <span class="text-muted small">Pilih tipe aturan dan daftarkan alamat IP</span>
+                        </div>
+                    </div>
+                    <span id="modeBadge" class="badge font-monospace px-3 py-2 border ${'bg-success-subtle text-success border-success-subtle' if mode == 'whitelist' else 'bg-danger-subtle text-danger border-danger-subtle'}">
+                        ${'ACCEPT' if mode == 'whitelist' else 'DROP'}
+                    </span>
+                </div>
+
+                <div class="card-body px-4 py-3">
+                    <!-- Dropdown Mode Selection -->
+                    <div class="mb-4">
+                        <label for="mode" class="form-label fw-semibold text-secondary small mb-2">
+                            TIPE ATURAN FIREWALL
+                        </label>
+                        <select class="form-select form-select-lg rounded-3 border fw-semibold" id="mode" name="mode">
+                            <option value="whitelist" tal:attributes="selected mode == 'whitelist'">Whitelist</option>
+                            <option value="blacklist" tal:attributes="selected mode == 'blacklist'">Blacklist</option>
+                        </select>
+                        <div class="form-text small text-muted mt-1" id="modeHelpText">
+                            ${'Hanya IP yang ada di daftar ini yang diizinkan mengakses jaringan.' if mode == 'whitelist' else 'IP yang ada di daftar ini akan dicekal/diblokir.'}
+                        </div>
+                    </div>
+
+                    <!-- Single IP List Textarea -->
+                    <div class="mb-3">
+                        <label for="ip_list" class="form-label fw-semibold text-secondary small mb-2">
+                            DAFTAR ALAMAT IP (SATU IP PER BARIS)
+                        </label>
+                        <textarea 
+                            class="form-control font-monospace bg-light border rounded-3 p-3" 
+                            id="ip_list" 
+                            name="ip_list" 
+                            rows="12" 
+                            placeholder="Contoh:&#10;192.168.1.100&#10;10.8.0.50&#10;203.0.113.15"
+                            spellcheck="false"
+                        >${ip_list}</textarea>
+                        <div class="invalid-feedback" id="ipListFeedback"></div>
+                        <div class="form-text small text-muted mt-2">
+                            Kosongkan kotak di atas jika ingin menghapus seluruh daftar IP.
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Submit Button & Action Bar -->
+                <div class="card-footer bg-light border-0 p-4 rounded-bottom-4 d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-3">
                     <div class="d-flex align-items-center gap-2 text-muted small">
-                        <i class="bi bi-cpu fs-5 text-secondary"></i>
-                        <span>Saat disimpan, skrip <code>/usr/local/bin/firewall</code> akan otomatis dieksekusi oleh sistem.</span>
+                        <i class="bi bi-terminal fs-5 text-secondary"></i>
+                        <span>Saat disimpan, sistem menjalankan <code>ipset flush</code>, <code>ipset add</code>, <code>netfilter-persistent save</code>, dan diakhiri dengan <code>/usr/local/bin/firewall</code>.</span>
                     </div>
                     <button type="submit" class="btn btn-primary px-4 py-2 rounded-3 shadow-sm d-flex align-items-center justify-content-center gap-2" id="btnSaveFirewall">
                         <i class="bi bi-shield-check fs-5"></i>
@@ -134,13 +113,13 @@
                     <span class="d-inline-block rounded-circle bg-danger" style="width:10px; height:10px;"></span>
                     <span class="d-inline-block rounded-circle bg-warning" style="width:10px; height:10px;"></span>
                     <span class="d-inline-block rounded-circle bg-success" style="width:10px; height:10px;"></span>
-                    <span class="ms-2 small fw-bold font-monospace">Output Eksekusi Firewall (/usr/local/bin/firewall)</span>
+                    <span class="ms-2 small fw-bold font-monospace">Output Eksekusi Perintah Firewall</span>
                 </div>
                 <span tal:condition="cmd_success is not None" class="badge ${'bg-success' if cmd_success else 'bg-danger'}">
                     ${'BERHASIL' if cmd_success else 'GAGAL'}
                 </span>
             </div>
-            <div class="card-body bg-dark text-light p-4 font-monospace rounded-bottom-4 overflow-auto" style="max-height: 400px; min-height: 150px;">
+            <div class="card-body bg-dark text-light p-4 font-monospace rounded-bottom-4 overflow-auto" style="max-height: 400px; min-height: 120px;">
                 <pre class="mb-0 text-white-50" style="white-space: pre-wrap; word-break: break-all;">${cmd_output}</pre>
             </div>
         </div>
@@ -149,44 +128,58 @@
         <script>
             (function() {
                 var form = document.getElementById('firewallForm');
-                var blacklistArea = document.getElementById('blacklist');
-                var whitelistArea = document.getElementById('whitelist');
-                var blacklistFb = document.getElementById('blacklistFeedback');
-                var whitelistFb = document.getElementById('whitelistFeedback');
+                var modeSelect = document.getElementById('mode');
+                var ipListArea = document.getElementById('ip_list');
+                var ipListFb = document.getElementById('ipListFeedback');
+                var modeBadge = document.getElementById('modeBadge');
+                var modeIconContainer = document.getElementById('modeIconContainer');
+                var modeIcon = document.getElementById('modeIcon');
+                var modeHelpText = document.getElementById('modeHelpText');
 
                 var ipv4Regex = /^(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$/;
 
-                function validateArea(area, feedbackEl) {
-                    var text = area.value || '';
+                function updateModeStyles() {
+                    var mode = modeSelect.value;
+                    if (mode === 'whitelist') {
+                        modeBadge.textContent = 'ACCEPT';
+                        modeBadge.className = 'badge font-monospace px-3 py-2 border bg-success-subtle text-success border-success-subtle';
+                        modeIconContainer.className = 'rounded-3 p-2 d-inline-flex align-items-center justify-content-center bg-success-subtle text-success';
+                        modeIcon.className = 'bi bi-check-circle fs-5';
+                        modeHelpText.textContent = 'Hanya IP yang ada di daftar ini yang diizinkan mengakses jaringan.';
+                    } else {
+                        modeBadge.textContent = 'DROP';
+                        modeBadge.className = 'badge font-monospace px-3 py-2 border bg-danger-subtle text-danger border-danger-subtle';
+                        modeIconContainer.className = 'rounded-3 p-2 d-inline-flex align-items-center justify-content-center bg-danger-subtle text-danger';
+                        modeIcon.className = 'bi bi-slash-circle fs-5';
+                        modeHelpText.textContent = 'IP yang ada di daftar ini akan dicekal/diblokir.';
+                    }
+                }
+
+                function validateArea() {
+                    var text = ipListArea.value || '';
                     var lines = text.split('\n');
                     for (var i = 0; i < lines.length; i++) {
                         var line = lines[i].trim();
                         if (line === '') continue;
                         if (!ipv4Regex.test(line)) {
-                            area.classList.add('is-invalid');
-                            feedbackEl.textContent = 'Baris ' + (i + 1) + ' ("' + line + '") bukan alamat IPv4 yang valid.';
-                            feedbackEl.style.display = 'block';
+                            ipListArea.classList.add('is-invalid');
+                            ipListFb.textContent = 'Baris ' + (i + 1) + ' ("' + line + '") bukan alamat IPv4 yang valid.';
+                            ipListFb.style.display = 'block';
                             return false;
                         }
                     }
-                    area.classList.remove('is-invalid');
-                    feedbackEl.textContent = '';
-                    feedbackEl.style.display = 'none';
+                    ipListArea.classList.remove('is-invalid');
+                    ipListFb.textContent = '';
+                    ipListFb.style.display = 'none';
                     return true;
                 }
 
-                blacklistArea.addEventListener('input', function() {
-                    validateArea(blacklistArea, blacklistFb);
-                });
-
-                whitelistArea.addEventListener('input', function() {
-                    validateArea(whitelistArea, whitelistFb);
-                });
+                modeSelect.addEventListener('change', updateModeStyles);
+                ipListArea.addEventListener('input', validateArea);
 
                 form.addEventListener('submit', function(e) {
-                    var bValid = validateArea(blacklistArea, blacklistFb);
-                    var wValid = validateArea(whitelistArea, whitelistFb);
-                    if (!bValid || !wValid) {
+                    var valid = validateArea();
+                    if (!valid) {
                         e.preventDefault();
                     }
                 });

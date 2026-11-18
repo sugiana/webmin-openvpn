@@ -5,7 +5,7 @@ Ini sudah dicoba dengan Debian 13.
 
 Pasang paket Debian::
 
-    sudo apt install openvpn iptables
+    sudo apt install openvpn iptables iptables-persistent ipset-persistent
 
 Unduh script pembuat sertifikat server::
 
@@ -140,7 +140,7 @@ dengan cara::
 
 Jika reverse proxy hanya port tertentu maka::
 
-    echo sugiana:7070,6543
+    echo sugiana:7070,6543 > /var/log/openvpn/proxy.txt
 
 Kemudian file ``/etc/openvpn/server/script/client-up`` berisi ini::
 
@@ -164,7 +164,7 @@ Hapus baris ``client-disconnect`` di ``/etc/openvpn/server.conf`` sehingga menja
     script-security 3
     client-connect /etc/openvpn/server/script/client-up
     plugin /usr/lib/openvpn/openvpn-plugin-auth-pam.so login
-    auth-user-pass-verify /etc/openvpn/script/check-auth via-file
+    auth-user-pass-verify /etc/openvpn/server/script/check-auth via-file
 
 Restart::
 

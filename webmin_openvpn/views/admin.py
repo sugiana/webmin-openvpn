@@ -31,8 +31,8 @@ from ..utils import (
     generate_totp_qr_svg_base64,
     format_totp_secret,
     validate_ip_list,
-    read_ip_list_file,
-    save_ip_list_file,
+    get_firewall_rules,
+    save_firewall_rules,
 )
 
 
@@ -701,6 +701,8 @@ def admin_2fa_view(request):
     qr_svg = None
     formatted_secret = None
     raw_secret = None
+    settings = request.registry.settings
+    issuer = settings.get('totp.issuer', 'WebminOpenVPN')
     if not user.has_2fa:
         pending_secret = request.session.get('pending_2fa_secret')
         if not pending_secret:
@@ -709,13 +711,14 @@ def admin_2fa_view(request):
         raw_secret = pending_secret
         formatted_secret = format_totp_secret(pending_secret)
         qr_svg = generate_totp_qr_svg_base64(
-            pending_secret, user.user_name, issuer='WebminOpenVPN')
+            pending_secret, user.user_name, issuer=issuer)
 
     return {
         'user': user,
         'qr_svg': qr_svg,
         'secret': raw_secret,
         'formatted_secret': formatted_secret,
+        'issuer': issuer,
     }
 
 
@@ -726,59 +729,35 @@ def admin_2fa_view(request):
 )
 def admin_firewall_view(request):
     """
-    Admin: Manajemen Firewall iptables (Blacklist & Whitelist).
+    Admin: Manajemen Firewall ipset (Whitelist & Blacklist).
     """
-    settings = request.registry.settings
-    blacklist_file = settings.get(
-        'openvpn.blacklist_file', '/etc/iptables/blacklist')
-    whitelist_file = settings.get(
-        'openvpn.whitelist_file', '/etc/iptables/whitelist')
-    firewall_cmd = settings.get(
-        'openvpn.firewall_cmd', '/usr/local/bin/firewall')
-
     cmd_output = None
     cmd_success = None
 
     if request.method == 'POST':
-        blacklist_raw = request.params.get('blacklist', '')
-        whitelist_raw = request.params.get('whitelist', '')
+        mode = request.params.get('mode', 'whitelist').strip().lower()
+        if mode not in ('whitelist', 'blacklist'):
+            mode = 'whitelist'
 
-        b_valid, b_ips, b_err = validate_ip_list(blacklist_raw)
-        if not b_valid:
-            request.session.flash(f'Blacklist: {b_err}', 'danger')
+        ip_list_raw = request.params.get('ip_list', '')
+
+        is_valid, ips, err_msg = validate_ip_list(ip_list_raw)
+        if not is_valid:
+            request.session.flash(f'Daftar IP: {err_msg}', 'danger')
             return {
                 'user': request.user,
-                'blacklist': blacklist_raw,
-                'whitelist': whitelist_raw,
+                'mode': mode,
+                'ip_list': ip_list_raw,
                 'cmd_output': None,
                 'cmd_success': None,
-                'blacklist_file': blacklist_file,
-                'whitelist_file': whitelist_file,
             }
 
-        w_valid, w_ips, w_err = validate_ip_list(whitelist_raw)
-        if not w_valid:
-            request.session.flash(f'Whitelist: {w_err}', 'danger')
-            return {
-                'user': request.user,
-                'blacklist': blacklist_raw,
-                'whitelist': whitelist_raw,
-                'cmd_output': None,
-                'cmd_success': None,
-                'blacklist_file': blacklist_file,
-                'whitelist_file': whitelist_file,
-            }
+        settings = request.registry.settings
+        firewall_cmd = settings.get(
+            'openvpn.firewall_cmd', '/usr/local/bin/firewall')
 
-        # 1. Simpan Blacklist
-        save_ip_list_file(blacklist_file, b_ips)
-
-        # 2. Simpan Whitelist
-        save_ip_list_file(whitelist_file, w_ips)
-
-        # 3. Jalankan /usr/local/bin/firewall
-        rc, cmd_output = run_system_command([firewall_cmd])
-        cmd_success = (rc == 0)
-
+        cmd_success, cmd_output = save_firewall_rules(
+            mode, ips, firewall_cmd=firewall_cmd)
         if cmd_success:
             request.session.flash(
                 'Pengaturan firewall berhasil disimpan dan diterapkan.',
@@ -786,33 +765,31 @@ def admin_firewall_view(request):
             )
         else:
             request.session.flash(
-                'Pengaturan firewall disimpan, namun eksekusi skrip firewall '
-                f'gagal (kode: {rc}).',
+                'Gagal menyimpan atau menerapkan pengaturan firewall.',
                 'danger',
             )
 
         return {
             'user': request.user,
-            'blacklist': '\n'.join(b_ips),
-            'whitelist': '\n'.join(w_ips),
-            'cmd_output': cmd_output,
+            'mode': mode,
+            'ip_list': '\n'.join(ips),
+            'cmd_output': cmd_output or (
+                'Pengaturan ipset dan netfilter-persistent berhasil '
+                'diterapkan.'
+                if cmd_success else 'Terjadi kesalahan saat menerapkan aturan.'
+            ),
             'cmd_success': cmd_success,
-            'blacklist_file': blacklist_file,
-            'whitelist_file': whitelist_file,
         }
 
     # GET
-    blacklist_content = read_ip_list_file(blacklist_file).strip()
-    whitelist_content = read_ip_list_file(whitelist_file).strip()
+    mode, ips = get_firewall_rules()
 
     return {
         'user': request.user,
-        'blacklist': blacklist_content,
-        'whitelist': whitelist_content,
+        'mode': mode,
+        'ip_list': '\n'.join(ips),
         'cmd_output': None,
         'cmd_success': None,
-        'blacklist_file': blacklist_file,
-        'whitelist_file': whitelist_file,
     }
 
 

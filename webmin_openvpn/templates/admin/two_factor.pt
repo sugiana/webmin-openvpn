@@ -149,7 +149,7 @@
                                         </div>
                                         <div class="small text-muted">
                                             Tipe Kunci: <strong>Berdasarkan waktu (Time-based)</strong><br />
-                                            Nama Akun: <strong>WebminOpenVPN (${user.user_name})</strong>
+                                            Nama Akun: <strong>${issuer} (${user.user_name})</strong>
                                         </div>
                                     </div>
                                 </div>

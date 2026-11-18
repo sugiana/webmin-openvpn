@@ -750,6 +750,28 @@ class TestWebminOpenVPN(unittest.TestCase):
         get_res = admin_app.get('/admin/2fa', status=200)
         self.assertIn('Aktivasi Google Authenticator', get_res.text)
         self.assertIn('data:image/svg+xml;base64,', get_res.text)
+        self.assertIn('WebminOpenVPN (admin)', get_res.text)
+
+        # Verify custom totp.issuer from settings is passed to QR generator and
+        # template
+        orig_issuer = self.app.registry.settings.get('totp.issuer')
+        self.app.registry.settings['totp.issuer'] = 'CustomVPNPortal'
+        try:
+            from webmin_openvpn.utils import generate_totp_qr_svg_base64
+            with patch(
+                'webmin_openvpn.views.admin.generate_totp_qr_svg_base64',
+                side_effect=generate_totp_qr_svg_base64,
+            ) as mock_qr:
+                custom_res = admin_app.get('/admin/2fa', status=200)
+                self.assertIn('CustomVPNPortal (admin)', custom_res.text)
+                mock_qr.assert_called_once()
+                self.assertEqual(
+                    mock_qr.call_args.kwargs.get('issuer'), 'CustomVPNPortal')
+        finally:
+            if orig_issuer is None:
+                self.app.registry.settings.pop('totp.issuer', None)
+            else:
+                self.app.registry.settings['totp.issuer'] = orig_issuer
         # Retrieve pending secret from manualKeyInput
         import re
         match = re.search(
@@ -1094,12 +1116,18 @@ class TestWebminOpenVPN(unittest.TestCase):
             'href="http://localhost/admin/change-password"', res.text)
 
     def test_admin_firewall_get_and_post_flows(self):
-        """Test GET and POST firewall rules (Blacklist & Whitelist) including
-        file creation, file removal when empty, and firewall script
-        execution."""
-        from webmin_openvpn.utils import validate_ip_list
+        """Test GET and POST firewall rules (Blacklist & Whitelist) using ipset
+        and netfilter-persistent."""
+        from unittest.mock import patch, call
+        from webmin_openvpn.utils import (
+            validate_ip_list,
+            parse_ipset_members,
+            get_firewall_rules,
+            save_firewall_rules,
+        )
+        from webmin_openvpn.scripts.initialize_db import setup_ipset
 
-        # Test utils validation
+        # 1. Test utils validation
         valid, ips, err = validate_ip_list("192.168.1.1\n\n10.8.0.5\n")
         self.assertTrue(valid)
         self.assertEqual(ips, ['192.168.1.1', '10.8.0.5'])
@@ -1112,59 +1140,141 @@ class TestWebminOpenVPN(unittest.TestCase):
         self.assertFalse(invalid)
         self.assertIn('bukan alamat IPv4 yang valid', err_msg)
 
+        # 2. Test parse_ipset_members
+        sample_ipset_output = (
+            "Name: whitelist\n"
+            "Type: hash:ip\n"
+            "Revision: 6\n"
+            "Header: family inet hashsize 1024 maxelem 65536 bucketsize 12\n"
+            "Size in memory: 296\n"
+            "References: 0\n"
+            "Number of entries: 2\n"
+            "Members:\n"
+            "10.8.0.2\n"
+            "192.168.1.50\n"
+        )
+        parsed = parse_ipset_members(sample_ipset_output)
+        self.assertEqual(parsed, ['10.8.0.2', '192.168.1.50'])
+
+        empty_ipset_output = (
+            "Name: whitelist\n"
+            "Number of entries: 0\n"
+            "Members:\n"
+        )
+        self.assertEqual(parse_ipset_members(empty_ipset_output), [])
+        self.assertEqual(parse_ipset_members(""), [])
+
+        # 3. Test get_firewall_rules priority: whitelist first, then blacklist
+        with patch('webmin_openvpn.utils.get_ipset_members') as mock_members:
+            # Case A: whitelist has entries
+            mock_members.side_effect = \
+                lambda s: ['192.168.1.10'] if s == 'whitelist' else []
+            mode, res_ips = get_firewall_rules()
+            self.assertEqual(mode, 'whitelist')
+            self.assertEqual(res_ips, ['192.168.1.10'])
+
+            # Case B: whitelist empty, blacklist has entries
+            mock_members.side_effect = \
+                lambda s: [] if s == 'whitelist' else ['10.0.0.99']
+            mode, res_ips = get_firewall_rules()
+            self.assertEqual(mode, 'blacklist')
+            self.assertEqual(res_ips, ['10.0.0.99'])
+
+            # Case C: both empty -> defaults to whitelist, empty ips
+            mock_members.side_effect = lambda s: []
+            mode, res_ips = get_firewall_rules()
+            self.assertEqual(mode, 'whitelist')
+            self.assertEqual(res_ips, [])
+
+        # 4. Test save_firewall_rules command execution sequence
+        with patch('webmin_openvpn.utils.run_system_command') as mock_cmd:
+            mock_cmd.return_value = (0, 'OK')
+            # Whitelist mode
+            success, _ = save_firewall_rules(
+                'whitelist', ['1.1.1.1', '8.8.8.8'])
+            self.assertTrue(success)
+            mock_cmd.assert_has_calls([
+                call(['ipset', 'flush', 'whitelist']),
+                call(['ipset', 'flush', 'blacklist']),
+                call(['ipset', 'add', 'whitelist', '1.1.1.1']),
+                call(['ipset', 'add', 'whitelist', '8.8.8.8']),
+                call(['netfilter-persistent', 'save']),
+                call(['/usr/local/bin/firewall']),
+            ], any_order=False)
+
+            mock_cmd.reset_mock()
+            # Blacklist mode
+            success, _ = save_firewall_rules('blacklist', ['192.168.1.200'])
+            self.assertTrue(success)
+            mock_cmd.assert_has_calls([
+                call(['ipset', 'flush', 'whitelist']),
+                call(['ipset', 'flush', 'blacklist']),
+                call(['ipset', 'add', 'blacklist', '192.168.1.200']),
+                call(['netfilter-persistent', 'save']),
+                call(['/usr/local/bin/firewall']),
+            ], any_order=False)
+
+        # 5. Test setup_ipset in initialize_db
+        with patch('webmin_openvpn.utils.run_system_command') as mock_cmd:
+            mock_cmd.return_value = (0, 'OK')
+            setup_ipset()
+            mock_cmd.assert_any_call([
+                'ipset', 'create', 'whitelist', 'hash:ip', '-exist'])
+            mock_cmd.assert_any_call([
+                'ipset', 'create', 'blacklist', 'hash:ip', '-exist'])
+
         admin_app = webtest.TestApp(self.app)
         admin_app.post(
             '/login', {'username': 'admin', 'password': 'admin'}, status=302)
 
-        # 1. GET /admin/firewall
-        fw_page = admin_app.get('/admin/firewall', status=200)
-        self.assertIn('Pengaturan Firewall', fw_page.text)
-        self.assertIn('Blacklist', fw_page.text)
-        self.assertIn('Whitelist', fw_page.text)
+        # 6. GET /admin/firewall
+        with patch(
+                'webmin_openvpn.views.admin.get_firewall_rules') as \
+                mock_get_rules:
+            mock_get_rules.return_value = ('whitelist', ['10.8.0.2'])
+            fw_page = admin_app.get('/admin/firewall', status=200)
+            self.assertIn('Pengaturan Firewall', fw_page.text)
+            self.assertIn('id="mode"', fw_page.text)
+            self.assertIn('name="mode"', fw_page.text)
+            self.assertIn('id="ip_list"', fw_page.text)
+            self.assertIn('10.8.0.2', fw_page.text)
 
-        # 2. POST with valid Blacklist and Whitelist
-        post_res = admin_app.post('/admin/firewall', {
-            'blacklist': "10.0.0.99\n192.168.1.200",
-            'whitelist': "1.1.1.1\n\n8.8.8.8",
-        }, status=200)
-        self.assertIn(
-            'Pengaturan firewall berhasil disimpan dan diterapkan',
-            post_res.text)
-        self.assertIn('Firewall dummy output: rules applied', post_res.text)
+        # 7. POST with valid Whitelist
+        with patch(
+                'webmin_openvpn.views.admin.save_firewall_rules') as mock_save:
+            mock_save.return_value = (True, 'ipset executed successfully')
+            post_res = admin_app.post('/admin/firewall', {
+                'mode': 'whitelist',
+                'ip_list': "1.1.1.1\n8.8.8.8",
+            }, status=200)
+            self.assertIn(
+                'Pengaturan firewall berhasil disimpan dan diterapkan',
+                post_res.text)
+            mock_save.assert_called_once_with(
+                'whitelist', ['1.1.1.1', '8.8.8.8'],
+                firewall_cmd=self.test_firewall_cmd)
 
-        # Verify files were created with correct IPs
-        self.assertTrue(os.path.exists(self.test_blacklist_file))
-        self.assertTrue(os.path.exists(self.test_whitelist_file))
-        with open(self.test_blacklist_file, 'r') as f:
-            self.assertEqual(f.read(), "10.0.0.99\n192.168.1.200\n")
-        with open(self.test_whitelist_file, 'r') as f:
-            self.assertEqual(f.read(), "1.1.1.1\n8.8.8.8\n")
+        # 8. POST with valid Blacklist
+        with patch(
+                'webmin_openvpn.views.admin.save_firewall_rules') as mock_save:
+            mock_save.return_value = (True, 'ipset executed successfully')
+            post_res = admin_app.post('/admin/firewall', {
+                'mode': 'blacklist',
+                'ip_list': "10.0.0.99\n192.168.1.200",
+            }, status=200)
+            self.assertIn(
+                'Pengaturan firewall berhasil disimpan dan diterapkan',
+                post_res.text)
+            mock_save.assert_called_once_with(
+                'blacklist', ['10.0.0.99', '192.168.1.200'],
+                firewall_cmd=self.test_firewall_cmd)
 
-        # 3. POST with empty Blacklist and empty Whitelist -> files must be
-        # removed
-        post_empty = admin_app.post('/admin/firewall', {
-            'blacklist': "\n   \n",
-            'whitelist': "",
-        }, status=200)
-        self.assertIn(
-            'Pengaturan firewall berhasil disimpan dan diterapkan',
-            post_empty.text)
-        self.assertFalse(os.path.exists(self.test_blacklist_file))
-        self.assertFalse(os.path.exists(self.test_whitelist_file))
-
-        # 4. POST with invalid IPv4 in Blacklist
-        post_invalid_b = admin_app.post('/admin/firewall', {
-            'blacklist': "not-an-ip",
-            'whitelist': "",
-        }, status=200)
-        self.assertIn('bukan alamat IPv4 yang valid', post_invalid_b.text)
-        self.assertFalse(os.path.exists(self.test_blacklist_file))
-
-        # 5. POST with invalid IPv4 in Whitelist
-        post_invalid_w = admin_app.post('/admin/firewall', {
-            'blacklist': "",
-            'whitelist': "10.0.0.1/24",
-        }, status=200)
-        self.assertIn('bukan alamat IPv4 yang valid', post_invalid_w.text)
-        self.assertFalse(
-            os.path.exists(self.test_whitelist_file))
+        # 9. POST with invalid IPv4 in IP list
+        with patch(
+                'webmin_openvpn.views.admin.save_firewall_rules') as mock_save:
+            post_invalid = admin_app.post('/admin/firewall', {
+                'mode': 'whitelist',
+                'ip_list': "not-an-ip",
+            }, status=200)
+            self.assertIn('bukan alamat IPv4 yang valid', post_invalid.text)
+            mock_save.assert_not_called()

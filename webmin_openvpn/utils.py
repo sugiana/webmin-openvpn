@@ -703,6 +703,119 @@ def validate_ip_list(text):
     return True, unique_ips, None
 
 
+def parse_ipset_members(output):
+    """
+    Parse daftar IP dari output perintah `ipset list <setname>`.
+    Mengembalikan list alamat IP unik.
+    """
+    if not output:
+        return []
+    lines = output.splitlines()
+    in_members = False
+    members = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped.lower().startswith('members:'):
+            in_members = True
+            continue
+        if in_members and stripped:
+            ip = stripped.split()[0]
+            try:
+                ipaddress.IPv4Address(ip)
+                members.append(ip)
+            except ValueError:
+                members.append(ip)
+    seen = set()
+    return [ip for ip in members if not (ip in seen or seen.add(ip))]
+
+
+def get_ipset_members(set_name):
+    """
+    Jalankan `ipset list <set_name>` dan kembalikan daftar IP anggotanya.
+    """
+    rc, out = run_system_command(['ipset', 'list', set_name])
+    if rc != 0 or not out:
+        return []
+    return parse_ipset_members(out)
+
+
+def get_firewall_rules():
+    """
+    Untuk menampilkan daftar IP coba dulu dengan ipset list whitelist,
+    bila kosong lanjut dengan ipset list blacklist.
+    Mengembalikan tuple (mode: str, ips: list[str]).
+    """
+    whitelist_ips = get_ipset_members('whitelist')
+    if whitelist_ips:
+        return 'whitelist', whitelist_ips
+
+    blacklist_ips = get_ipset_members('blacklist')
+    if blacklist_ips:
+        return 'blacklist', blacklist_ips
+
+    return 'whitelist', []
+
+
+def save_firewall_rules(mode, ips, firewall_cmd='/usr/local/bin/firewall'):
+    """
+    Simpan aturan firewall menggunakan ipset:
+    1. ipset flush whitelist
+    2. ipset flush blacklist
+    3. Bila Whitelist: ipset add whitelist [ip]
+       Bila Blacklist: ipset add blacklist [ip]
+    4. netfilter-persistent save agar aktif saat boot.
+    5. Akhiri dengan /usr/local/bin/firewall
+    Mengembalikan tuple (success: bool, output: str).
+    """
+    # Pastikan himpunan ipset whitelist dan blacklist sudah ada
+    for name in ['whitelist', 'blacklist']:
+        run_system_command(['ipset', 'create', name, 'hash:ip', '-exist'])
+
+    logs = []
+    overall_success = True
+
+    # 1. ipset flush whitelist
+    rc, out = run_system_command(['ipset', 'flush', 'whitelist'])
+    if out and out.strip():
+        logs.append(out.strip())
+    if rc != 0:
+        overall_success = False
+
+    # 2. ipset flush blacklist
+    rc, out = run_system_command(['ipset', 'flush', 'blacklist'])
+    if out and out.strip():
+        logs.append(out.strip())
+    if rc != 0:
+        overall_success = False
+
+    # 3. ipset add
+    target_set = 'whitelist' if mode == 'whitelist' else 'blacklist'
+    for ip in ips:
+        rc, out = run_system_command(['ipset', 'add', target_set, ip])
+        if out and out.strip():
+            logs.append(out.strip())
+        if rc != 0:
+            overall_success = False
+
+    # 4. netfilter-persistent save
+    rc, out = run_system_command(['netfilter-persistent', 'save'])
+    if out and out.strip():
+        logs.append(out.strip())
+    if rc != 0:
+        overall_success = False
+
+    # 5. Akhiri dengan firewall_cmd (/usr/local/bin/firewall)
+    firewall_cmd = firewall_cmd or '/usr/local/bin/firewall'
+    rc, out = run_system_command([firewall_cmd])
+    if out and out.strip():
+        logs.append(out.strip())
+    if rc != 0:
+        overall_success = False
+
+    combined_output = "\n".join(logs)
+    return overall_success, combined_output
+
+
 def read_ip_list_file(filepath):
     """
     Read IP list file if exists, return string.
